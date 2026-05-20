@@ -39,10 +39,7 @@ at::Tensor compute_addresses_from_input_indices(
     const at::Tensor& input,
     int64_t dim,
     const at::Tensor& indices,
-    int64_t virtual_offset,
-    const std::vector<int64_t>& device_size,
-    const std::vector<int64_t>& device_stride,
-    int64_t element_size);
+    int64_t virtual_offset);
 
 
 } // namespace torch_spyre

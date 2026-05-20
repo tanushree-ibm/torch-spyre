@@ -15,21 +15,39 @@
 #include "spyre_address_computation.h"
 #include <ATen/ATen.h>
 #include <c10/util/Exception.h>
+#include "spyre_tensor_impl.h"  // Add this header
 
 namespace spyre {
 
+std::vector<std::vector<int64_t>> convertHostCoOrdinatesToDeviceCoOrdinates(std::vector<std::vector<int64_t>>& host_cords)
+{
+    std::vector<std::vector<int64_t>> device_cords;
+    for (const auto& coord : host_cords) {
+        int64_t row = coord[0];
+        int64_t col = coord[1];
+        device_cords.push_back({col/64, row, col%64});
+    }
+    return device_cords;
+}
 at::Tensor compute_addresses_from_input_indices(
     const at::Tensor& input,
     int64_t dim,
     const at::Tensor& indices,
-    int64_t virtual_offset,
-    const std::vector<int64_t>& device_size,
-    const std::vector<int64_t>& device_stride,
-    int64_t element_size) {
+    int64_t virtual_offset) {
 
     std::cout << "input.size() = " << input.sizes() << "\n";
     std::cout << "dim = " << dim << "\n";
     std::cout << "indices.size() = " << indices.sizes() << "\n";
+
+    SpyreTensorLayout input_layout = get_spyre_tensor_layout(input);
+    // Print layout information
+    std::cout << input_layout.toString() << std::endl;
+    
+    // Get device size and stride from layout
+    auto device_size = input_layout.device_size;
+    auto device_stride = input_layout.stride_map;
+    int64_t element_size = input.element_size();
+  
 
     // Store the original device for later
     auto original_device = indices.device();
@@ -47,7 +65,7 @@ at::Tensor compute_addresses_from_input_indices(
 
     // Find coordinates:
     // out[i, index[i, j]] for dim = 1
-    std::vector<std::pair<int64_t, int64_t>> dim_cords;
+    std::vector<std::vector<int64_t>> host_cords;
 
     for (int64_t i = 0; i < indices_cpu.size(0); ++i) {
         for (int64_t j = 0; j < indices_cpu.size(1); ++j) {
@@ -59,21 +77,21 @@ at::Tensor compute_addresses_from_input_indices(
                 << val << "\n";
 
             if (dim == 1) {
-                dim_cords.push_back({i, val}); //[i, index[i, j]] 
+                host_cords.push_back({i, val}); //[i, index[i, j]] 
             } else {
-                dim_cords.push_back({val, j}); //[index[i, j], j] 
+                host_cords.push_back({val, j}); //[index[i, j], j] 
             }
         }
     }
 
-    for (auto it : dim_cords) {
+    for (auto it : host_cords) {
         std::cout
-            << "dim_cords : "
-            << it.first << ","
-            << it.second << "\n";
+            << "host_cords : "
+            << it[0] << ","
+            << it[1] << "\n";
     }
 
-    int64_t numElements = dim_cords.size();
+    int64_t numElements = host_cords.size();
     auto ind_addresses = at::zeros(
         {numElements},
         at::TensorOptions().dtype(at::kFloat));
@@ -87,15 +105,22 @@ at::Tensor compute_addresses_from_input_indices(
 
     int i = 0;
 
-    for (const auto& coord : dim_cords) {
+    std::vector<std::vector<int64_t>> device_cords = convertHostCoOrdinatesToDeviceCoOrdinates(host_cords);
+    for (auto it : device_cords) {
+        std::cout
+            << "device_cords : "
+            << it[0] << ","
+            << it[1] << ","
+            << it[2] << "\n";
+    }
 
-        int64_t row = coord.first;
-        int64_t col = coord.second;
+    for (const auto& coord : device_cords) {
 
         // Compute linear element_offset=row×stride0​+col×stride1​
         int64_t element_offset =
-            row * device_stride[0] +
-            col * device_stride[1];
+            coord[0] * device_stride[0] +
+            coord[1] * device_stride[1] +
+            coord[2] * device_stride[2];
 
         std::cout
             << "element_offset = "
@@ -140,5 +165,4 @@ at::Tensor compute_addresses_from_input_indices(
     // Move the result back to the original device (spyre)
     return reshaped_addresses_ind.to(original_device);
 }
-
 } // namespace spyre

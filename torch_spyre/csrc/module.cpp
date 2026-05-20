@@ -412,6 +412,5 @@ PYBIND11_MODULE(_C, m) {
   m.def("device_count", &spyre::device_count);
   m.def("compute_addresses_from_input_indices", &spyre::compute_addresses_from_input_indices,
         "Convert logical indices to Spyre HBM byte addresses",
-        py::arg("input"),py::arg("dim"),py::arg("indices"), py::arg("virtual_offset"), py::arg("device_size"),
-        py::arg("device_stride"), py::arg("element_size"));
+        py::arg("input"),py::arg("dim"),py::arg("indices"), py::arg("virtual_offset"));
 }
