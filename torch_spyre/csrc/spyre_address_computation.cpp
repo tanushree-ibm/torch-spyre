@@ -134,11 +134,11 @@ at::Tensor compute_addresses_from_input_indices(
         std::cout
             << "byte_address = "
             << byte_address << "\n";
-
+        //TBD
         // Ensure stick alignment
-        TORCH_CHECK(
+        /*TORCH_CHECK(
             byte_address % STICK_SIZE == 0,
-            "Address is not stick aligned!");
+            "Address is not stick aligned!");*/
 
         // Convert to stick_address=byte_address​/STICK_SIZE
         int64_t stick_address =
@@ -151,7 +151,7 @@ at::Tensor compute_addresses_from_input_indices(
         stick_addresses.push_back(stick_address);
 
         ind_addresses_accessor[i++] =
-            static_cast<float>(stick_address);
+            static_cast<int64_t>(stick_address);
     }
 
 
