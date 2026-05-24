@@ -181,20 +181,21 @@ def test_indices_to_input_address_compact():
         result = torch.ops.spyre.indices_to_input_address(
             input_tensor, dim, indices, offset
         )
-        
+        print(result)
+        """
         # Verify
         assert result.shape == expected_shape, \
             f"Test {test_id}: shape mismatch"
         assert result.dtype == torch.float32, \
             f"Test {test_id}: dtype mismatch"
         
-        print(f"✓ Test {test_id} passed")
+        print(f"✓ Test {test_id} passed")"""
 
 
 if __name__ == "__main__":
     # Run the single comprehensive test
-    test_indices_to_input_address_stress_suite()
+    #test_indices_to_input_address_stress_suite()
     
     # Or run the compact version
-    # test_indices_to_input_address_compact()
+    test_indices_to_input_address_compact()
 

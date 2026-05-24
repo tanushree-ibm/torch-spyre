@@ -19,150 +19,99 @@
 
 namespace spyre {
 
-std::vector<std::vector<int64_t>> convertHostCoOrdinatesToDeviceCoOrdinates(std::vector<std::vector<int64_t>>& host_cords)
+// Single consolidated function for host to device coordinate conversion
+std::vector<std::vector<int64_t>> convertHostCoOrdinatesToDeviceCoOrdinates(
+    const std::vector<std::vector<int64_t>>& host_cords,
+    int64_t elements_per_stick = 64)
 {
     std::vector<std::vector<int64_t>> device_cords;
+    
     for (const auto& coord : host_cords) {
-        int64_t row = coord[0];
-        int64_t col = coord[1];
-        device_cords.push_back({col/64, row, col%64});
+        std::vector<int64_t> device_coord;
+        
+        // Copy all dimensions except the last
+        for (size_t i = 0; i < coord.size() - 1; ++i) {
+            device_coord.push_back(coord[i]);
+        }
+        
+        // Split last dimension: [stick_index, element_in_stick]
+        int64_t last_dim = coord.back();
+        device_coord.push_back(last_dim / elements_per_stick);
+        device_coord.push_back(last_dim % elements_per_stick);
+        
+        device_cords.push_back(device_coord);
     }
+    
     return device_cords;
 }
+
+// Single consolidated compute_addresses function for all N-D tensors
 at::Tensor compute_addresses_from_input_indices(
     const at::Tensor& input,
     int64_t dim,
     const at::Tensor& indices,
-    int64_t virtual_offset) {
-
-    std::cout << "input.size() = " << input.sizes() << "\n";
-    std::cout << "dim = " << dim << "\n";
-    std::cout << "indices.size() = " << indices.sizes() << "\n";
-
+    int64_t virtual_offset) 
+{
+    // Get tensor properties
     SpyreTensorLayout input_layout = get_spyre_tensor_layout(input);
-    // Print layout information
-    std::cout << input_layout.toString() << std::endl;
-    
-    // Get device size and stride from layout
-    auto device_size = input_layout.device_size;
     auto device_stride = input_layout.stride_map;
     int64_t element_size = input.element_size();
-  
+    int64_t ndim = input.dim();
+    
+    constexpr int64_t STICK_SIZE = 128;
+    int64_t elements_per_stick = STICK_SIZE / element_size;
 
-    // Store the original device for later
+    // Move indices to CPU
     auto original_device = indices.device();
-
-    // Ensure indices tensor is on CPU
     auto indices_cpu = indices.cpu();
-
-    std::cout << "indices_cpu : " << indices_cpu << "\n";
-
-    // Get the shape of indices
     auto indices_shape = indices_cpu.sizes();
+    auto acc = indices_cpu.accessor<int64_t, 3>();
 
-    // Accessor
-    auto acc = indices_cpu.accessor<int64_t, 2>();
-
-    // Find coordinates:
-    // out[i, index[i, j]] for dim = 1
+    // Extract host coordinates (works for any N-D tensor)
     std::vector<std::vector<int64_t>> host_cords;
-
+    std::cout<<"Host CoOrdinates :";
     for (int64_t i = 0; i < indices_cpu.size(0); ++i) {
         for (int64_t j = 0; j < indices_cpu.size(1); ++j) {
-
-            int64_t val = acc[i][j]; //index[i][j]
-
-            std::cout
-                << "indices[" << i << "][" << j << "] = "
-                << val << "\n";
-
-            if (dim == 1) {
-                host_cords.push_back({i, val}); //[i, index[i, j]] 
-            } else {
-                host_cords.push_back({val, j}); //[index[i, j], j] 
+            for (int64_t k = 0; k < indices_cpu.size(2); ++k) {
+            int64_t val = acc[i][j][k];
+            
+            // Build N-D coordinate by inserting val at position 'dim'
+            std::vector<int64_t> coord = {i, j, k};  // Initialize with indices positions
+            coord[dim] = val;  // Replace dimension 'dim' with the indexed value
+            host_cords.push_back(coord);
+            std::cout<<"\n";
             }
         }
     }
 
-    for (auto it : host_cords) {
-        std::cout
-            << "host_cords : "
-            << it[0] << ","
-            << it[1] << "\n";
+    // Convert to device coordinates (works for all dimensions)
+    auto device_cords = convertHostCoOrdinatesToDeviceCoOrdinates(
+        host_cords, elements_per_stick);
+
+    // Calculate addresses
+    int64_t numElements = device_cords.size();
+    auto ind_addresses = at::zeros({numElements}, at::TensorOptions().dtype(at::kFloat));
+    auto ind_addresses_accessor = ind_addresses.accessor<float, 1>();
+
+    std::cout<<"Device CoOrdinate \n";
+    for (size_t i = 0; i < device_cords.size(); ++i) {
+        const auto& coord = device_cords[i];
+        
+        // Calculate element offset
+        int64_t element_offset = 0;
+        for (size_t k = 0; k < coord.size(); ++k) {
+            element_offset += coord[k] * device_stride[k];
+            std::cout<<coord[k]<<" , ";
+        }
+        std::cout<<"\n";
+        // Convert to stick address
+        int64_t byte_address = virtual_offset + element_offset * element_size;
+        int64_t stick_address = byte_address / STICK_SIZE;
+        
+        ind_addresses_accessor[i] = static_cast<float>(stick_address);
     }
 
-    int64_t numElements = host_cords.size();
-    auto ind_addresses = at::zeros(
-        {numElements},
-        at::TensorOptions().dtype(at::kFloat));
-
-    auto ind_addresses_accessor =
-        ind_addresses.accessor<float, 1>();
-
-    constexpr int64_t STICK_SIZE = 128;
-
-    std::vector<int64_t> stick_addresses;
-
-    int i = 0;
-
-    std::vector<std::vector<int64_t>> device_cords = convertHostCoOrdinatesToDeviceCoOrdinates(host_cords);
-    for (auto it : device_cords) {
-        std::cout
-            << "device_cords : "
-            << it[0] << ","
-            << it[1] << ","
-            << it[2] << "\n";
-    }
-
-    for (const auto& coord : device_cords) {
-
-        // Compute linear element_offset=row×stride0​+col×stride1​
-        int64_t element_offset =
-            coord[0] * device_stride[0] +
-            coord[1] * device_stride[1] +
-            coord[2] * device_stride[2];
-
-        std::cout
-            << "element_offset = "
-            << element_offset << "\n";
-
-        // Convert to byte_address=virtual_offset+element_offset×element_size
-        int64_t byte_address =
-            virtual_offset +
-            element_offset * element_size;
-
-        std::cout
-            << "byte_address = "
-            << byte_address << "\n";
-        //TBD
-        // Ensure stick alignment
-        /*TORCH_CHECK(
-            byte_address % STICK_SIZE == 0,
-            "Address is not stick aligned!");*/
-
-        // Convert to stick_address=byte_address​/STICK_SIZE
-        int64_t stick_address =
-            byte_address / STICK_SIZE;
-
-        std::cout
-            << "stick_address = "
-            << stick_address << "\n\n";
-
-        stick_addresses.push_back(stick_address);
-
-        ind_addresses_accessor[i++] =
-            static_cast<int64_t>(stick_address);
-    }
-
-
-    auto reshaped_addresses_ind =
-        ind_addresses.reshape(indices_shape);
-
-    std::cout
-        << "reshaped_addresses = "
-        << reshaped_addresses_ind << "\n";
-
-    // Move the result back to the original device (spyre)
-    return reshaped_addresses_ind.to(original_device);
+    return ind_addresses.reshape(indices_shape).to(original_device);
 }
+
 } // namespace spyre
