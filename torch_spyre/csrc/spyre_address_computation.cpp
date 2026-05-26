@@ -57,41 +57,66 @@ at::Tensor compute_addresses_from_input_indices(
     auto device_stride = input_layout.stride_map;
     int64_t element_size = input.element_size();
     int64_t ndim = input.dim();
+
+    std::cout<<"input.dim() = "<<input.dim()<<"\n";
+    std::cout<<"dim = "<<dim<<"\n";
+    std::cout<<"input_layout = "<<input_layout.toString()<<"\n";
     
     constexpr int64_t STICK_SIZE = 128;
     int64_t elements_per_stick = STICK_SIZE / element_size;
 
     // Move indices to CPU
     auto original_device = indices.device();
-    auto indices_cpu = indices.cpu();
+    auto indices_cpu = indices.contiguous().cpu();
+    std::cout<<"indices : "<<indices_cpu<<"\n";
     auto indices_shape = indices_cpu.sizes();
-    auto acc = indices_cpu.accessor<int64_t, 3>();
+    //auto acc = indices_cpu.accessor<int64_t, 3>();
 
     // Extract host coordinates (works for any N-D tensor)
     std::vector<std::vector<int64_t>> host_cords;
-    std::cout<<"Host CoOrdinates :";
-    for (int64_t i = 0; i < indices_cpu.size(0); ++i) {
-        for (int64_t j = 0; j < indices_cpu.size(1); ++j) {
-            for (int64_t k = 0; k < indices_cpu.size(2); ++k) {
-            int64_t val = acc[i][j][k];
-            
-            // Build N-D coordinate by inserting val at position 'dim'
-            std::vector<int64_t> coord = {i, j, k};  // Initialize with indices positions
-            coord[dim] = val;  // Replace dimension 'dim' with the indexed value
-            host_cords.push_back(coord);
-            std::cout<<"\n";
-            }
-        }
-    }
+    int64_t total = indices.numel();
 
+    for (int64_t linear = 0; linear < total; ++linear) {
+        // Convert linear → multi-dim index
+        std::vector<int64_t> idx(ndim);
+        int64_t tmp = linear;
+
+        for (int d = ndim - 1; d >= 0; --d) {
+            idx[d] = tmp % indices.size(d);
+            tmp /= indices.size(d);
+        }
+
+        int64_t val = indices_cpu.flatten()[linear].item<int64_t>();
+
+        // Build input coordinate
+        std::vector<int64_t> coord = idx;
+        coord[dim] = val;
+
+        host_cords.push_back(coord);
+    }
+    std::cout<<"Host Cords : \n ";
+    for(auto host_cord : host_cords)
+    {
+        for(auto cord : host_cord)
+        {
+            std::cout<<cord<<" , ";
+        }
+        std::cout<<"\n";
+    }
+    // return input;
     // Convert to device coordinates (works for all dimensions)
     auto device_cords = convertHostCoOrdinatesToDeviceCoOrdinates(
         host_cords, elements_per_stick);
 
     // Calculate addresses
     int64_t numElements = device_cords.size();
-    auto ind_addresses = at::zeros({numElements}, at::TensorOptions().dtype(at::kFloat));
-    auto ind_addresses_accessor = ind_addresses.accessor<float, 1>();
+    //auto ind_addresses = at::zeros({numElements}, at::TensorOptions().dtype(at::kLong));
+    //auto ind_addresses = at::zeros({numElements}, at::kLong);
+    //auto ind_addresses_accessor = ind_addresses.accessor<int64_t, 1>();
+    auto ind_addresses = at::zeros(
+    {numElements}, 
+    at::TensorOptions().dtype(at::kLong));  // int64_t
+    auto ind_addresses_accessor = ind_addresses.accessor<int64_t, 1>();
 
     std::cout<<"Device CoOrdinate \n";
     for (size_t i = 0; i < device_cords.size(); ++i) {
@@ -108,7 +133,8 @@ at::Tensor compute_addresses_from_input_indices(
         int64_t byte_address = virtual_offset + element_offset * element_size;
         int64_t stick_address = byte_address / STICK_SIZE;
         
-        ind_addresses_accessor[i] = static_cast<float>(stick_address);
+        ind_addresses_accessor[i] = stick_address;
+        std::cout<<"stick_address = "<<stick_address<<"\n";
     }
 
     return ind_addresses.reshape(indices_shape).to(original_device);
