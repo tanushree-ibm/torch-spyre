@@ -458,3 +458,25 @@ def to_dtype_cpu(input: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
 @to_dtype_cpu.register_fake
 def _(input: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     return torch.empty_like(input, dtype=dtype)
+
+@torch.library.custom_op("spyre::indices_to_input_address", mutates_args=(), device_types="spyre")
+def indices_to_input_address(
+    input: torch.Tensor,
+    dim : int,
+    indices: torch.Tensor,
+    virtual_offset: int,
+) -> torch.Tensor:
+    import torch_spyre._C as _C
+    return _C.compute_addresses_from_input_indices(input, dim,
+        indices, virtual_offset)
+
+@indices_to_input_address.register_fake
+def _(
+    input: torch.Tensor,
+    dim : int,
+    indices: torch.Tensor,
+    virtual_offset: int,
+):
+    output_shape = indices.shape[:-1]
+    return torch.empty(output_shape, dtype=torch.float32, device=indices.device)
+
