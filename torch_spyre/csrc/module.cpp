@@ -52,6 +52,7 @@
 #include "spyre_tensor_impl.h"
 #include "spyre_views.h"
 #include "types_mapping.h"
+#include "spyre_address_computation.h"
 
 namespace fs = std::filesystem;
 
@@ -490,4 +491,8 @@ PYBIND11_MODULE(_C, m) {
         allocator.resetPeakStats(device);
       },
       py::arg("device"), "Reset peak allocator statistics");
+  m.def("indices_to_addresses_nd", &spyre::indices_to_addresses_nd,
+        "Convert N-dimensional logical indices to addresses",
+        py::arg("logical_indices"), py::arg("value_tensor"), py::arg("dim") = 0,
+        py::arg("virtual_offset") = 0);
 }
