@@ -494,26 +494,28 @@ def _(input: torch.Tensor, dim: int, keepdim: bool = False):
     return (values, indices)
 
 
-@torch.library.custom_op("spyre::max_default_int64_fallback", mutates_args=())
-def max_default_int64_fallback(input: torch.Tensor) -> torch.Tensor:
-    """
-    CPU fallback for torch.max(input) when input is int64.
-    This custom op will be registered with a CPU fallback in fallbacks.py.
-    Returns a 1D tensor with shape [1] containing the maximum value.
-    """
-    # This should never be called directly; the fallback in fallbacks.py handles it
-    raise RuntimeError(
-        "spyre::max_default_int64_fallback should be handled by CPU fallback registration"
-    )
-
-
-@max_default_int64_fallback.register_fake
-def _(input: torch.Tensor):
-    """
-    Fake implementation for shape inference.
-    Returns a scalar (0D) tensor matching the input dtype.
-    """
-    return input.new_empty([])
+## TODO (imaihal): This needs scalar tensor support from Spyre to CPU. issues #1172
+#
+# @torch.library.custom_op("spyre::max_default_int64_fallback", mutates_args=())
+# def max_default_int64_fallback(input: torch.Tensor) -> torch.Tensor:
+#    """
+#    CPU fallback for torch.max(input) when input is int64.
+#    This custom op will be registered with a CPU fallback in fallbacks.py.
+#    Returns a 1D tensor with shape [1] containing the maximum value.
+#    """
+#    # This should never be called directly; the fallback in fallbacks.py handles it
+#    raise RuntimeError(
+#        "spyre::max_default_int64_fallback should be handled by CPU fallback registration"
+#    )
+#
+#
+# @max_default_int64_fallback.register_fake
+# def _(input: torch.Tensor):
+#    """
+#    Fake implementation for shape inference.
+#    Returns a scalar (0D) tensor matching the input dtype.
+#    """
+#    return input.new_empty([])
 
 
 @torch.library.custom_op("spyre::batched_matmul", mutates_args=(), device_types="spyre")
@@ -578,7 +580,23 @@ def _(
     dim: int,
     virtual_offset: int = 0,
 ):
-    return torch.empty(indices.shape, dtype=torch.int64, device=indices.device)
+    #return torch.empty(indices.shape, dtype=torch.int64, device=indices.device)
+    print("indices.shape =", indices.shape)
+    print("value_tensor.shape =", value_tensor.shape)
+    print("value_tensor.dim() =", value_tensor.dim())
+    print("dim =", dim)
+
+    output_shape = list(value_tensor.shape)
+    output_shape[dim] = indices.numel()
+
+    print("output_shape =", output_shape)
+
+    return torch.empty(
+        output_shape,
+        dtype=torch.int64,
+        device=indices.device,
+    )
+
 @torch.library.custom_op("spyre::qfp8ch", mutates_args=(), device_types="spyre")
 def qfp8ch(input: torch.Tensor) -> torch.Tensor:
     """
