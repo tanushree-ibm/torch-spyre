@@ -580,22 +580,8 @@ def _(
     dim: int,
     virtual_offset: int = 0,
 ):
-    #return torch.empty(indices.shape, dtype=torch.int64, device=indices.device)
-    print("indices.shape =", indices.shape)
-    print("value_tensor.shape =", value_tensor.shape)
-    print("value_tensor.dim() =", value_tensor.dim())
-    print("dim =", dim)
+    return torch.empty(indices.shape, dtype=torch.int64, device=indices.device)
 
-    output_shape = list(value_tensor.shape)
-    output_shape[dim] = indices.numel()
-
-    print("output_shape =", output_shape)
-
-    return torch.empty(
-        output_shape,
-        dtype=torch.int64,
-        device=indices.device,
-    )
 
 @torch.library.custom_op("spyre::qfp8ch", mutates_args=(), device_types="spyre")
 def qfp8ch(input: torch.Tensor) -> torch.Tensor:

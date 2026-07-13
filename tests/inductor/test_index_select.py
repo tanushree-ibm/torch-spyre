@@ -27,12 +27,12 @@ def test_index_select():
     def index_select_fn(input, dim, index):
         return torch.index_select(input, dim, index)  
 
-    input_cpu = torch.randn((3, 64), dtype=torch.float16)
+    input_cpu = torch.randn((3, 128), dtype=torch.float16)
     input_spyre = input_cpu.to("spyre")
 
-    row_indices = torch.tensor([0, 2],dtype=torch.int64,)
+    row_indices = torch.tensor([0,1,2],dtype=torch.int64,)
     index_cpu = row_indices
-    print(index_cpu.dtype)
+    #print(index_cpu.dtype)
     print(index_cpu)
 
     index_spyre = index_cpu.to("spyre")
@@ -45,6 +45,9 @@ def test_index_select():
     print("Result Shape (Spyre):", result_spyre.shape)
 
     print(result_cpu)
+    assert torch.allclose(result_cpu, expected, rtol=1e-3, atol=1e-3), \
+        f"Result mismatch!\nExpected: {expected}\nGot: {result_cpu}"
+    print("✓ Assertion passed: Result matches expected values")
 
 if __name__ == "__main__":
     import os
