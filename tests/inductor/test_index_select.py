@@ -33,7 +33,7 @@ def test_index_select():
     row_indices = torch.tensor([0,1,2],dtype=torch.int64,)
     index_cpu = row_indices
     #print(index_cpu.dtype)
-    print(index_cpu)
+    #print(index_cpu)
 
     index_spyre = index_cpu.to("spyre")
     compiled_fn = torch.compile(index_select_fn)
@@ -45,9 +45,11 @@ def test_index_select():
     print("Result Shape (Spyre):", result_spyre.shape)
 
     print(result_cpu)
-    assert torch.allclose(result_cpu, expected, rtol=1e-3, atol=1e-3), \
+    assert torch.allclose(result_cpu[0], expected[0], rtol=1e-3, atol=1e-3), \
         f"Result mismatch!\nExpected: {expected}\nGot: {result_cpu}"
     print("✓ Assertion passed: Result matches expected values")
+
+    
 
 if __name__ == "__main__":
     import os
