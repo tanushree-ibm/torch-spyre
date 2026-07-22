@@ -23,6 +23,7 @@
 
 #include "spyre_allocator.h"
 #include "spyre_tensor_impl.h"
+#include "logging.h"
 
 namespace spyre {
 
@@ -59,7 +60,7 @@ static constexpr int64_t SPYRE_SEGMENT_SIZE =
 static int64_t get_virtual_offset_bytes(const at::Tensor& tensor) {
   TORCH_CHECK(tensor.is_privateuseone(),
               "get_virtual_offset_bytes: tensor must be on spyre device");
-  std::cout<<" get_virtual_offset_bytes start \n";
+
   auto* impl = dynamic_cast<SpyreTensorImpl*>(tensor.unsafeGetTensorImpl());
   TORCH_CHECK(impl != nullptr,
               "get_virtual_offset_bytes: tensor is not a SpyreTensorImpl");
@@ -78,9 +79,10 @@ static int64_t get_virtual_offset_bytes(const at::Tensor& tensor) {
   const int64_t region_id = static_cast<int64_t>(chunks[0].addr.region_id) +
                             static_cast<int64_t>(chunks[0].addr.offset);
 
-  std::cout<<" chunks[0].addr.region_id = "<<chunks[0].addr.region_id<<"\n";
-  std::cout<<" chunks[0].addr.offset = "<<chunks[0].addr.offset<<"\n";
-  std::cout<<" region_id - (region_id % SPYRE_SEGMENT_SIZE) = "<<(region_id - (region_id % SPYRE_SEGMENT_SIZE))<<"\n";
+  DEBUGINFO(" SPYRE_SEGMENT_SIZE = ", SPYRE_SEGMENT_SIZE);
+  DEBUGINFO(" chunks[0].addr.region_id = ", chunks[0].addr.region_id);
+  DEBUGINFO(" chunks[0].addr.offset = ", chunks[0].addr.offset);
+  DEBUGINFO(" region_id - (region_id % SPYRE_SEGMENT_SIZE) = ", (region_id - (region_id % SPYRE_SEGMENT_SIZE)));
   return region_id - (region_id % SPYRE_SEGMENT_SIZE);
 
 }
@@ -124,31 +126,32 @@ struct GatherIdxMeta {
 // ---------------------------------------------------------------------------
 static bool stick_skip_for_host_stride(const SpyreTensorLayout& layout,
                                        int64_t host_stride, int64_t* skip_out) {
-  std::cout<<" stick_skip_for_host_stride start \n";
   const auto& device_size = layout.device_size;
   const auto& stride_map = layout.stride_map;
   const int64_t stick_dim = static_cast<int64_t>(device_size.size()) - 1;
-  std::cout<<"device_size = "<<device_size<<"\n";
-  std::cout<<"stride_map = "<<stride_map<<"\n";
+
+  DEBUGINFO("device_size = ", device_size);
+  DEBUGINFO("stride_map = ", stride_map);
 
   for (int64_t k = 0; k < stick_dim; ++k) {
-    std::cout<<"stride_map["<<k<<"] = "<<stride_map[k]<<"\n";
-    std::cout<<"host_stride = "<<host_stride<<"\n";
+    DEBUGINFO("stride_map[", k,"] = ",stride_map[k]);
+    DEBUGINFO("host_stride = ", host_stride);
+
     if (stride_map[k] == host_stride) {
       int64_t skip = 1;
       for (int64_t m = k + 1; m < stick_dim; ++m) {
-        std::cout<<"m = "<<m<<"\n";
-        std::cout<<"device_size["<<m<<"] = "<<device_size[m]<<"\n";
+        DEBUGINFO("m = ", m);
+        DEBUGINFO("device_size[", m,"] = ",device_size[m]);
         skip *= device_size[m];
-        std::cout<<"skip = "<<skip<<"\n";
+        DEBUGINFO("skip = ", skip);
       }
       *skip_out = skip;
-      std::cout<<"skip_out = "<<skip<<"\n";
-      std::cout<<"reurn true \n";
+      DEBUGINFO("skip_out = ", skip);
+      DEBUGINFO("reurn true ");
       return true;
     }
   }
-  std::cout<<"return false \n";
+  DEBUGINFO("reurn false ");
   return false;
 }
 
@@ -174,15 +177,14 @@ static GatherIdxMeta build_gather_idx_meta(
     const at::Tensor& value_tensor,
     const std::vector<int64_t>& gather_dims,  // innermost first
     int64_t virtual_offset_bytes) {
-  std::cout<<" build_gather_idx_meta start\n";
   const int64_t ndim = value_tensor.dim();
   const int64_t element_size = value_tensor.element_size();
   const int64_t elements_per_stick = STICK_BYTES / element_size;
   const SpyreTensorLayout layout = get_spyre_tensor_layout(value_tensor);
 
-  std::cout<<" ndim = "<<ndim<<"\n";
-  std::cout<<" element_size = "<<element_size<<"\n";
-  std::cout<<" elements_per_stick = "<<elements_per_stick<<"\n";
+  DEBUGINFO("ndim = ", ndim);
+  DEBUGINFO("element_size = ", element_size);
+  DEBUGINFO("elements_per_stick = ", elements_per_stick);
 
   for (int64_t d : gather_dims) {
     TORCH_CHECK(d >= 0 && d < ndim, "gather dim ", d, " out of range for ",
@@ -198,7 +200,7 @@ static GatherIdxMeta build_gather_idx_meta(
 
   // base_addr_ : segment-relative start stick.
   meta.base_addr = virtual_offset_bytes / STICK_BYTES;
-  std::cout<<" meta.base_addr = "<<meta.base_addr<<"\n";
+  DEBUGINFO("meta.base_addr = ", meta.base_addr);
 
   // skip_addr_[d] and idx_prev_cum_size_[d] — innermost first, matching
   // the order deeptools expects when iterating from outer to inner.
@@ -214,9 +216,9 @@ static GatherIdxMeta build_gather_idx_meta(
 
   for (size_t i = 0; i < gather_dims.size(); ++i) {
     int64_t host_stride_elements = value_tensor.stride(gather_dims[i]);
-    std::cout<<" gather_dims["<<i<<"] = "<<gather_dims[i]<<"\n";
-    std::cout<<"value_tensor.stride(gather_dims[i]) = "<<value_tensor.stride(gather_dims[i])<<"\n";
-    std::cout<<" host_stride_elements = "<<host_stride_elements<<"\n";
+    DEBUGINFO(" gather_dims[", i,"] = ",gather_dims[i]);
+    DEBUGINFO(" value_tensor.stride(gather_dims[i]) = ", value_tensor.stride(gather_dims[i]));
+    DEBUGINFO(" host_stride_elements = ",host_stride_elements);
     int64_t skip = 0;
     TORCH_CHECK(
         stick_skip_for_host_stride(layout, host_stride_elements, &skip),
@@ -225,9 +227,9 @@ static GatherIdxMeta build_gather_idx_meta(
         host_stride_elements, " for gather dim ", gather_dims[i],
         "; this dimension's on-device layout does not "
         "support stick-level gather addressing.");
-    std::cout<<" skip = "<<skip<<"\n";
+    DEBUGINFO(" skip = ",skip);
     meta.skip_addr[i] = skip;
-    std::cout<<" meta.skip_addr["<<i<<"]="<<meta.skip_addr[i]<<"\n";
+    DEBUGINFO(" meta.skip_addr[",i,"]=",meta.skip_addr[i]);
     // idx_prev_cum_size[i] is the number of elements "consumed" by one unit
     // of the *inner* gather dimensions combined. For the innermost gather dim
     // this is 1 by definition (no inner gather dims). For outer dims it equals
@@ -235,17 +237,17 @@ static GatherIdxMeta build_gather_idx_meta(
     // product), matching deeptools' idx_prev_cum_size_ semantics.
     if (i == 0) {
       // innermost: no inner gather dims, so cumulative size is 1.
-      std::cout<<" i = "<<i<<"\n";
+      DEBUGINFO(" i = ",i);
       meta.idx_prev_cum_size[i] = 1;
-      std::cout<<" meta.idx_prev_cum_size["<<i<<"]="<<meta.idx_prev_cum_size[i]<<"\n";
+      DEBUGINFO(" meta.idx_prev_cum_size[",i,"]=",meta.idx_prev_cum_size[i]);
     } else {
       // outer dim d: idx_prev_cum_size = stride of the gather dim one level
       // inner (gather_dims[i-1]).  This is the number of flat-index units that
       // correspond to one step in the current outer gather dimension.
-      std::cout<<" i = "<<i<<"\n";
-      std::cout<<" value_tensor.stride(gather_dims["<<i-1<<"]) = "<<value_tensor.stride(gather_dims[i - 1])<<"\n";
+      DEBUGINFO(" i = ",i);
+      DEBUGINFO(" value_tensor.stride(gather_dims[",i-1,"]) = ",value_tensor.stride(gather_dims[i - 1]));
       meta.idx_prev_cum_size[i] = value_tensor.stride(gather_dims[i - 1]);
-      std::cout<<"meta.idx_prev_cum_size["<<i<<"] = "<<meta.idx_prev_cum_size[i]<<"\n";
+      DEBUGINFO("meta.idx_prev_cum_size[",i,"] = ",meta.idx_prev_cum_size[i]);
     }
   }
 
@@ -285,16 +287,15 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
               "value_tensor must reside on the spyre device");
   TORCH_CHECK(dim >= 0 && dim < value_tensor.dim(), "dim=", dim,
               " out of range for ", value_tensor.dim(), "D tensor");
-  std::cout<<" indices_to_addresses_nd start \n";
 
   // If the caller passes virtual_offset_bytes == 0 (the default from the pass),
   // derive it from the tensor's actual HBM allocation.
   // base_addr_ = region_id / STICK_BYTES, where region_id is the absolute
   // HBM byte address of the value tensor's allocation start.
-  std::cout<<" virtual_offset_bytes = "<<virtual_offset_bytes<<"\n";
+  DEBUGINFO(" virtual_offset_bytes = ",virtual_offset_bytes);
   if (virtual_offset_bytes == 0) {
     virtual_offset_bytes = get_virtual_offset_bytes(value_tensor);
-    std::cout<<" virtual_offset_bytes = "<<virtual_offset_bytes<<"\n";
+    DEBUGINFO(" virtual_offset_bytes = ",virtual_offset_bytes);
   }
 
   // For a standard torch.gather there is exactly one gather dimension.
@@ -312,9 +313,9 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
   const int64_t num_elems = indices_cpu.numel();
   const auto indices_flat = indices_cpu.reshape({num_elems});
   const auto idx_acc = indices_flat.accessor<int64_t, 1>();
-  std::cout<<" indices_shape = "<<indices_shape<<"\n";
-  std::cout<<" num_elems = "<<num_elems<<"\n";
-  std::cout<<" indices_flat = "<<indices_flat<<"\n";
+  DEBUGINFO(" indices_shape = ",indices_shape);
+  DEBUGINFO(" num_elems = ",num_elems);
+  DEBUGINFO(" indices_flat = ",indices_flat);
 
   // Validate bounds.
   const int64_t dim_size = value_tensor.size(dim);
@@ -326,8 +327,8 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
   }
 
   const size_t num_dims = meta.skip_addr.size();
-  std::cout<<" meta.skip_addr.size() = "<<meta.skip_addr.size()<<"\n";
-  std::cout<<" num_dims = "<<num_dims<<"\n";
+  DEBUGINFO(" meta.skip_addr.size() = ",meta.skip_addr.size());
+  DEBUGINFO(" num_dims =  ",num_dims);
 
   // ---------------------------------------------------------------------------
   // Outer-dimension (non-gathered) batch offset.
@@ -356,17 +357,17 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
   // ---------------------------------------------------------------------------
   const int64_t ndim = value_tensor.dim();
   const SpyreTensorLayout value_layout = get_spyre_tensor_layout(value_tensor);
-  std::cout<<" ndim = "<<ndim<<"\n";
-  std::cout<<" value_layout = "<<value_layout.toString()<<"\n";
+  DEBUGINFO(" ndim = ",ndim);
+  DEBUGINFO(" value_layout = ",value_layout.toString());
 
   // Compute the flat-output stride for each dimension of the indices tensor
   // (same shape as output).  indices_shape == indices_cpu.sizes().
   std::vector<int64_t> out_stride(ndim, 1);
   for (int64_t k = ndim - 2; k >= 0; --k) {
-    std::cout<<" out_stride[k + 1]="<<out_stride[k + 1] <<"\n";
-    std::cout<<" indices_shape[k + 1]="<<indices_shape[k + 1]<<"\n";
+    DEBUGINFO("  out_stride[k + 1] = ",out_stride[k + 1]);
+    DEBUGINFO(" indices_shape[k + 1] = ",indices_shape[k + 1]);
     out_stride[k] = out_stride[k + 1] * indices_shape[k + 1];
-    std::cout<<" k="<<k<<"out_stride[k]="<<out_stride[k]<<"\n";
+    DEBUGINFO(" k=",k,"out_stride[k]=",out_stride[k]);
   }
 
   // --- Core address computation — exact port of ConvertData_gather_idx ---
@@ -379,19 +380,19 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
   }
 
   // Step 1b: add the contribution of every non-gathered dimension.
-  std::cout<<"value_tensor.stride(0) = "<<value_tensor.stride(0)<<"\n";
-  std::cout<<"value_tensor.stride(1) = "<<value_tensor.stride(1)<<"\n";
+  DEBUGINFO(" value_tensor.stride(0) = ",value_tensor.stride(0));
+  DEBUGINFO(" value_tensor.stride(1) = ",value_tensor.stride(1));
   for (int64_t k = 0; k < ndim; ++k) {
-    std::cout<<" k="<<k<<"\n";
+    DEBUGINFO(" k=",k);
     if (k == dim) continue;  // handled via index_val below
     int64_t skip_k = 0;
-    std::cout<<"value_tensor.stride("<<k<<")="<<value_tensor.stride(k)<<"\n";
+    DEBUGINFO(" value_tensor.stride(",value_tensor.stride(1));
     if (!stick_skip_for_host_stride(value_layout, value_tensor.stride(k),
                                     &skip_k) ||
         skip_k == 0) {
       continue;  // sub-stick dim, no stick offset
     }
-    std::cout<<" skip_k : "<<skip_k<<"\n";
+    DEBUGINFO(" skip_k : ",skip_k);
     const int64_t sz_k = indices_shape[k];
     for (int64_t j = 0; j < num_elems; ++j) {
       const int64_t coord_k = (j / out_stride[k]) % sz_k;
@@ -399,9 +400,9 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
     }
   }
 
-  std::cout<<"num_dims = "<<num_dims<<"\n";
+  DEBUGINFO(" num_dims = ",num_dims);
   if (num_dims > 0) {
-    std::cout<<"meta.idx_prev_cum_size[0] = "<<meta.idx_prev_cum_size[0]<<"\n";
+    DEBUGINFO(" meta.idx_prev_cum_size[0] = ",meta.idx_prev_cum_size[0]);
     if (meta.idx_prev_cum_size[0] == 1) {
       // Fast path (standard case): innermost idx_prev_cum_size is 1.
       // Iterate outer → second-innermost, then handle innermost separately.
@@ -412,27 +413,31 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
         const int64_t skip = meta.skip_addr[i];
         const int64_t cum_size = meta.idx_prev_cum_size[i];
 
-        std::cout<<"i = "<<i<<"\n";
-        std::cout<<"skip = "<<skip<<"\n";
-        std::cout<<"cum_size = "<<cum_size<<"\n";
+        DEBUGINFO(" i = ",i);
+        DEBUGINFO("skip = ",skip);
+        DEBUGINFO("cum_size = ",cum_size);
 
         for (int64_t j = 0; j < num_elems; ++j) {
-          std::cout<<"index_val["<<j<<"] = "<<index_val[j]<<"\n";
+          DEBUGINFO(" index_val[",j,"] = ", index_val[j]);
           const int64_t coord = index_val[j] / cum_size;
-          std::cout<<" coord = "<<"index_val[j] / cum_size"<<"= "<<coord<<"\n";
-          std::cout<<"coord * skip = "<<coord * skip<<"\n";
-          std::cout<<"coord * cum_size = "<<coord * cum_size<<"\n";
+          DEBUGINFO(" coord = ","index_val[j] / cum_size",coord);
+          DEBUGINFO(" coord * skip = ",coord * skip);
+          DEBUGINFO(" coord * cum_size = ",coord * cum_size);
           addr[j] += coord * skip;
           index_val[j] -= coord * cum_size;
-          std::cout<<"addr[j] = "<<addr[j]<<"\n";
-          std::cout<<"index_val[j] = "<<index_val[j]<<"\n";
+          DEBUGINFO("addr[j] = ",addr[j]);
+          DEBUGINFO("index_val[j] = ",index_val[j]);
+
         }
       }
 
       // Innermost dimension: idx_prev_cum_size[0] == 1 so coord == index_val.
       const int64_t skip_inner = meta.skip_addr[0];
       for (int64_t j = 0; j < num_elems; ++j) {
+        DEBUGINFO("index_val[",j,"] = ",index_val[j]);
+        DEBUGINFO("skip_inner = ",skip_inner);
         addr[j] += index_val[j] * skip_inner;
+        DEBUGINFO("addr[",j,"] = ",addr[j]);
       }
 
     } else {
@@ -461,7 +466,7 @@ at::Tensor indices_to_addresses_nd(const at::Tensor& indices,
                                        std::numeric_limits<uint32_t>::max()),
         "Computed stick address ", addr[j],
         " does not fit in uint32 for index element ", j);
-    std::cout<<" Address : "<<static_cast<int32_t>(addr[j])<<"\n";
+    DEBUGINFO(" Address : ",static_cast<int32_t>(addr[j]));
     addr_acc[j] = static_cast<int32_t>(addr[j]);
   }
 
