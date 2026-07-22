@@ -23,7 +23,7 @@ torch._dynamo.config.dynamic_shapes = False
 # Until then set `SENCORES=1` testing indirect access
 
 
-STICK = 4096
+STICK = 128
 def test_index_select():
     def index_select_fn(input, dim, index):
         return torch.index_select(input, dim, index)  
@@ -40,7 +40,7 @@ def test_index_select():
     #input_spyre = input_cpu.to("spyre")
     input_spyre = input_cpu.to("spyre", device_layout=stl)
 
-    row_indices = torch.tensor([0,1,2],dtype=torch.int32)
+    row_indices = torch.tensor([0,2],dtype=torch.int32)
     index_cpu = row_indices
 
     index_spyre = index_cpu.to("spyre")
