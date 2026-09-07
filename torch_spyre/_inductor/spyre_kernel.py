@@ -68,6 +68,7 @@ from .pass_utils import (
     alignment_coordinates,
     build_operation_alignment_inputs,
     iteration_space_with_splits,
+    _scatter_index_buf_names_ordered,
 )
 from .views import (
     AlignmentInputs,
@@ -587,6 +588,9 @@ class SpyreKernel(Kernel[CSEVariable]):
         ] = {}
         self._alignment_access_by_tensor_arg: dict[int, AlignmentAccess] = {}
         self._alignment_inputs_by_spec: dict[int, AlignmentInputs] = {}
+        # P=1 scatter: maps op_spec id → IndirectAccess coord to re-inject at
+        # output arg device_coordinates[0] after simplify_op_spec overwrites it.
+        self._p1_scatter_indirect_coord_by_spec: dict[int, Any] = {}
         self.pool_size: int = pool_size
 
     def indirect_var_names(self) -> "frozenset[str] | None":
@@ -912,6 +916,14 @@ class SpyreKernel(Kernel[CSEVariable]):
             aligned_iteration_space=it_space_extended,
         )
         for arg, tensor in zip(args, alignment_inputs.tensors):
+            # IndirectAccess markers are injected after create_tensor_arg (they
+            # cannot be produced by alignment_coordinates), so skip the check
+            # for any arg whose coordinates already carry them.
+            if any(
+                hasattr(c, "has") and c.has(IndirectAccess)
+                for c in arg.device_coordinates
+            ):
+                continue
             if list(arg.device_coordinates) != tensor["coordinates"]:
                 raise RuntimeError(
                     "alignment input collection disagrees with tensor codegen"
@@ -1150,6 +1162,7 @@ class SpyreKernel(Kernel[CSEVariable]):
                 else set()
             )
 
+            _p1_indirect_coord = None  # set inside the else-branch for P=1 scatter
             if indirect_syms_used:
                 # Gather/scatter: coordinates are built with raw indirect symbols here;
                 # indirect_access_subs is applied later in codegen_kernel → simplify_op_spec.
@@ -1178,6 +1191,59 @@ class SpyreKernel(Kernel[CSEVariable]):
                     self.create_tensor_arg(False, real_dst_name, dst),
                 ]
                 op_indirect_var_names = None
+
+                # P=1 scatter: Inductor bakes the scatter-row address as a
+                # compile-time constant in the write index, so indirect_indexing()
+                # is never called and indirect_vars stays empty.  The index tensor
+                # is still present in the op's reads. Inject IndirectAccess directly
+                # at device position 0 of the output arg (the scattered dim, enforced
+                # to pos 0 by enforce_indirect_access_layout).
+                from torch._inductor.ir import Scatter as _Scatter
+
+                ir_node = self.current_node.node
+                if isinstance(ir_node.data, _Scatter):
+                    index_buf_names = _scatter_index_buf_names_ordered(ir_node)
+                    if index_buf_names:
+                        index_buf_name = index_buf_names[0]
+                        rw = ir_node.get_read_writes()
+                        index_dep = next(
+                            (
+                                d
+                                for d in rw.reads
+                                if isinstance(d, MemoryDep)
+                                and d.name == index_buf_name
+                            ),
+                            None,
+                        )
+                        if index_dep is not None:
+                            idx_ta = self.load(index_buf_name, index_dep.index)
+                            idx_arg = self.create_tensor_arg(
+                                True,
+                                index_buf_name,
+                                idx_ta,
+                                opspec_name=index_buf_name,
+                            )
+                            # IndirectAccess cannot be produced by
+                            # alignment_coordinates (which only sees concrete
+                            # index expressions); inject it directly at device
+                            # position 0 of the output arg — the scattered dim,
+                            # guaranteed at pos 0 by enforce_indirect_access_layout.
+                            # The alignment check in create_op_spec skips args
+                            # whose coordinates already carry IndirectAccess.
+                            out_arg = args[-1]
+                            _p1_indirect_coord = IndirectAccess(
+                                sympy.Symbol(index_buf_name)
+                            )
+                            out_arg.device_coordinates[0] = _p1_indirect_coord
+                            args = [idx_arg] + list(args)
+                            op_indirect_var_names = frozenset({index_buf_name})
+                            logger.debug(
+                                "store: P=1 scatter %s — injected IndirectAccess(%s) "
+                                "at output device_coordinates[0]",
+                                real_dst_name,
+                                index_buf_name,
+                            )
+
             in_coords = args[-2].device_coordinates
             out_coords = args[-1].device_coordinates
             if is_restickify_coords(in_coords, out_coords):
@@ -1187,6 +1253,14 @@ class SpyreKernel(Kernel[CSEVariable]):
             op_spec = self.create_op_spec(
                 op, False, args, op_info, op_indirect_var_names
             )
+            # P=1 scatter: IndirectAccess was injected into out_arg.device_coordinates[0]
+            # above, but build_operation_alignment_inputs (called inside create_op_spec)
+            # captured coordinates from _alignment_access_by_tensor_arg which was
+            # populated before the injection — so align_tensors_pure in simplify_op_spec
+            # will overwrite device_coordinates with the old (non-IndirectAccess) result.
+            # Record the injection so codegen_kernel can re-apply it after simplify_op_spec.
+            if _p1_indirect_coord is not None:
+                self._p1_scatter_indirect_coord_by_spec[id(op_spec)] = _p1_indirect_coord
             self.op_specs.append(op_spec)
         else:
             raise Unsupported(f"store value of unexpected type {type(value)}")
@@ -1305,6 +1379,13 @@ class SpyreKernel(Kernel[CSEVariable]):
                 repeat_info=self._alignment_repeat_info_by_spec.get(id(op_spec)),
                 alignment_inputs=self._alignment_inputs_by_spec.get(id(op_spec)),
             )
+            # P=1 scatter: align_tensors_pure (run inside simplify_op_spec via the
+            # captured alignment_inputs) overwrites device_coordinates from the
+            # pre-injection snapshot, losing the IndirectAccess we set in store().
+            # Re-inject it now at position 0 of the output (last) arg.
+            p1_coord = self._p1_scatter_indirect_coord_by_spec.get(id(op_spec))
+            if p1_coord is not None:
+                op_spec.args[-1].device_coordinates[0] = p1_coord
 
         if _spyre_config.validate_op_specs:
             validate_op_specs(self.op_specs, stage="after_simplification")

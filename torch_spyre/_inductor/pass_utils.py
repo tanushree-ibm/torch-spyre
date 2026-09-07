@@ -524,8 +524,23 @@ def _build_indirect_store_subs(
     scatter_index_syms = all_write_syms - loop_syms
 
     if not scatter_index_syms:
-        # No scatter symbols found.
-        return {}, None
+        # P=1: Inductor constant-folded the scatter-index loop, so there are no
+        # free scatter symbols in write_dep.index.  The index buffer is still
+        # present in the op's reads.  Synthesise a placeholder symbol and map it
+        # to the index buffer so that all downstream work-division constraints
+        # (indirect_store_subs_from_op, shared_indirect_data_syms,
+        # indirect_forbidden_split_syms, indirect_store_entry_syms) treat this
+        # op correctly as an indirect scatter, not a plain identity copy.
+        index_buf_names = _scatter_index_buf_names_ordered(op)
+        if not index_buf_names:
+            return {}, None
+        index_buf_name = index_buf_names[0]
+        read_deps = [d for d in rw.reads if isinstance(d, MemoryDep)]
+        index_read = next((d for d in read_deps if d.name == index_buf_name), None)
+        if index_read is None:
+            return {}, None
+        p1_sym = sympy.Symbol(f"_p1_scatter_idx_{index_buf_name}")
+        return {p1_sym: IndexedBase(index_buf_name)[index_read.index]}, None
 
     # Try to map scatter symbols to index buffers from the closure.
     index_buf_names = _scatter_index_buf_names_ordered(op)

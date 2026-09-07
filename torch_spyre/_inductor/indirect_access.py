@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import Counter
 from typing import Callable
 
 from sympy import Symbol
@@ -217,7 +218,9 @@ def get_indirect_layout_label(
     """Get layout label for a tensor in an indirect access operation.
 
     Index tensors → KERNEL_IDX
-    Value/Output tensors → OUTPUT
+    Value/Output tensors → matched via get_layout_label_func so that tensors
+    with different dim_orders receive distinct layout labels and each label's
+    registered dim_order stays consistent with the tensor's own scales dict.
     """
     if tensor_idx in index_tensor_indices:
         label = "KERNEL_IDX"
@@ -230,13 +233,38 @@ def get_indirect_layout_label(
         logger.debug(f"Tensor {tensor_idx}: KERNEL_IDX layout (index tensor)")
         return label
 
-    # For Value/Output tensors
-    label = "OUTPUT"
-    if label not in layouts:
-        layouts[label] = {
+    # For Value/Output tensors: prefer the "OUTPUT" label but only reuse it
+    # when the already-registered "OUTPUT" layout has a matching dim_order
+    # (same multiset of dims, same stick, same stick_size).  When the dims
+    # differ — which can happen for P=1 scatter after align_tensors realigns
+    # the value and output tensors differently — fall back to the generic
+    # label-lookup function that registers a fresh label.  This prevents the
+    # second tensor from receiving a layout whose dim_order doesn't match its
+    # own scales dict, which would cause KeyError in _build_coord_info.
+    preferred = "OUTPUT"
+    if preferred not in layouts:
+        # First non-index tensor: register under the preferred label.
+        layouts[preferred] = {
             "dim_order": dim_order,
             "stick_dim_order": effective_stick,
             "stick_size": stick_size,
         }
-    logger.debug(f"Tensor {tensor_idx}: OUTPUT layout (indirect access)")
+        label = preferred
+    elif (
+        layouts[preferred]["stick_dim_order"] == effective_stick
+        and Counter(layouts[preferred]["dim_order"]) == Counter(dim_order)
+        and layouts[preferred]["stick_size"] == stick_size
+    ):
+        # Subsequent tensor matches the registered "OUTPUT" layout: reuse it.
+        label = preferred
+    else:
+        # Mismatch: assign a fresh label so this tensor's layout is correct.
+        label = get_layout_label_func(
+            layouts,
+            dim_order,
+            effective_stick,
+            stick_size,
+            layout_labels,
+        )
+    logger.debug(f"Tensor {tensor_idx}: {label} layout (indirect access)")
     return label

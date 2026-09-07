@@ -519,9 +519,27 @@ def _compile_specs(
                 # records sequential placeholder IDs (-1,-2,-3), not which
                 # kernel tensor argument each slot belongs to. Two structurally
                 # identical ops on different tensors would otherwise collide.
-                arg_indices = tuple(a.arg_index for a in entry.args)
+                #
+                # arg_index alone is insufficient: for ops that include HBM-pool
+                # (intermediate) tensor slots, arg_index is -1 at cache-key time
+                # for every slot — real arg_indices are not assigned until the
+                # spyre_kernel_args loop that runs after all op-specs are
+                # generated (spyre_kernel.py:codegen_kernel).  Two structurally
+                # identical ops that differ only in which slots are pool vs
+                # external (e.g., scatter src→pool and copy-back pool→dst) would
+                # collide and share the same SDSC file, causing the copy-back to
+                # execute the scatter's data movement instead of its own.
+                #
+                # Include the allocation key (the single dict key: "hbm",
+                # "hbm_pool", or "lx", or None when allocation=={}) for each
+                # tensor slot so that pool/external ordering is part of the key
+                # even before arg_index assignment.
+                arg_keys = tuple(
+                    (a.arg_index, next(iter(a.allocation), None))
+                    for a in entry.args
+                )
                 cache_key = json.dumps(canonical_json, sort_keys=True) + str(
-                    arg_indices
+                    arg_keys
                 )
                 cached = sdsc_cache.get(cache_key)
             if cached is None:

@@ -463,37 +463,78 @@ def _get_indirect_access_dim_order_requirements(
 
 def _p1_scatter_device_pos(
     target_stl: "SpyreTensorLayout",
+    write_dep: "MemoryDep",
 ) -> int | None:
     """Identify the device position of the scattered dimension for a P=1 scatter.
 
-    When P=1, Inductor eliminates the scatter-index loop and the destination's
-    device layout carries the scattered dimension as a singleton placeholder:
-    ``device_size[j] == 1`` and ``stride_map[j] == -1`` (undefined stride,
-    per the FixedTiledLayout singleton convention in ir.py).
+    When P=1, Inductor eliminates the scatter-index loop and embeds the row
+    address as a compile-time constant in ``write_dep.index``.  The scattered
+    dimension is the one whose host stride is **absent** from the loop-variable
+    coefficients of the write index: every loop variable contributes its stride
+    as a coefficient, but the scatter dimension was collapsed to a constant and
+    no loop variable covers it.
 
-    For P>1 that same dimension has ``device_size[j] == P`` and a real stride.
-    So for P=1 the scatter dim is uniquely identified as the non-stick device
-    dimension whose ``stride_map`` entry is ``-1``.
+    Algorithm:
+    1. Collect the set of strides that appear as coefficients of loop variables
+       in ``write_dep.index``.
+    2. Walk the non-stick device positions of ``target_stl``.  The first
+       position whose ``stride_map`` value is a real (non-negative) stride and
+       is **not** in the loop-stride set is the scattered dimension.
+
+    Falls back to the legacy ``stride_map == -1`` singleton heuristic when the
+    stride-matching approach yields no result (e.g., genuinely sparse broadcast
+    dim with no host correspondent).
 
     Returns the device position (0-indexed from left, stick is last) of the
-    scattered dimension, or None if no singleton placeholder is found.
+    scattered dimension, or None if it cannot be determined.
     """
     stride_map = list(target_stl.stride_map)
-    device_size = list(target_stl.device_size)
     n = len(stride_map)
     if n < 2:
         return None
 
+    # Collect the strides that appear as loop-variable coefficients in the
+    # write index.  These correspond to the dimensions the loop *does* iterate
+    # over; the scattered dim is the one not iterated.
+    loop_strides: set[int] = set()
+    for sym in write_dep.ranges:
+        coeff = write_dep.index.coeff(sym)
+        if coeff is not None:
+            try:
+                loop_strides.add(int(coeff))
+            except (TypeError, ValueError):
+                pass
+
     # The stick is always the last device dim; skip it.
-    # The scatter dim is the non-stick dim with stride_map == -1 (singleton).
+    # Find the first non-stick dim whose stride_map entry is a real stride
+    # (>= 0) and does not appear among the loop-variable strides.
     for dev_pos in range(n - 1):
-        if int(stride_map[dev_pos]) == -1 and int(device_size[dev_pos]) == 1:
+        sm = int(stride_map[dev_pos])
+        if sm < 0:
+            # Sparse/broadcast placeholder (stride_map == -1): legacy fallback
+            # path — treat as scattered dim if no better candidate was found.
+            continue
+        if sm not in loop_strides:
+            logger.debug(
+                "_p1_scatter_device_pos: found scattered dim at dev_pos %d "
+                "via missing-stride heuristic (stride=%d, loop_strides=%s, "
+                "stride_map=%s)",
+                dev_pos,
+                sm,
+                sorted(loop_strides),
+                stride_map,
+            )
+            return dev_pos
+
+    # Legacy fallback: look for a stride_map == -1 singleton placeholder
+    # (sparse dim with no host correspondent).
+    for dev_pos in range(n - 1):
+        if int(stride_map[dev_pos]) == -1:
             logger.debug(
                 "_p1_scatter_device_pos: found singleton placeholder at dev_pos %d "
-                "(stride_map=%s, device_size=%s)",
+                "(stride_map=%s) [legacy fallback]",
                 dev_pos,
                 stride_map,
-                device_size,
             )
             return dev_pos
 
@@ -526,8 +567,10 @@ def _enforce_scatter_destination_layout(
     P=1 special case: when the index has exactly one element Inductor eliminates
     the scatter-index loop, embedding the row address as a constant in write_dep.
     scatter_syms is empty in that case.  _p1_scatter_device_pos identifies which
-    device dimension is scattered by finding the stride absent from the
-    loop-variable coefficients, then enforces that it sits at device position 0.
+    device dimension is scattered by finding the device stride that is absent
+    from all loop-variable coefficients in write_dep.index (the scattered dim
+    contributes a constant, not a loop variable), then enforces it sits at
+    device position 0.
     """
     write_dep = next(
         (d for d in scatter_op.get_read_writes().writes if isinstance(d, MemoryDep)),
@@ -614,9 +657,10 @@ def _enforce_scatter_destination_layout(
     if not scatter_syms:
         # P=1: the scatter-index loop was eliminated; the row address is a
         # compile-time constant embedded in write_dep.index.  Identify the
-        # scattered device dimension via the singleton placeholder and enforce
-        # it sits at device position 0.
-        p1_dev_pos = _p1_scatter_device_pos(target_stl)
+        # scattered device dimension by finding which device stride is absent
+        # from the loop-variable coefficients in write_dep, then enforce that
+        # dimension sits at device position 0.
+        p1_dev_pos = _p1_scatter_device_pos(target_stl, write_dep)
         if p1_dev_pos is None:
             logger.debug(
                 "scatter_destination_check: P=1 %s — no singleton placeholder "

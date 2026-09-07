@@ -1232,6 +1232,16 @@ def _create_sdsc_tensors(
                 # rejects with "external allocations with repeated dimensions".
                 if stick_dim not in dim_order:
                     dim_order = dim_order + [stick_dim]
+        elif stick_dim is not None and stick_dim not in dim_order:
+            # op_stick_dim is known (e.g. P=1 scatter), but this individual
+            # tensor's stick dim is absent from its dim_order (the scattered-row
+            # dimension was size-1 and was dropped by align_tensors_pure, so
+            # _get_device_dim_order only found the non-stick dims). Append it
+            # so that layoutDimOrder_ includes the stick.
+            # Skip index tensors — they manage their own layout via
+            # _collect_index_tensor_layouts.
+            if not (has_indirect_access and i in index_tensor_indices):
+                dim_order = dim_order + [stick_dim]
 
         if op_spec.op == "layernormscale" and len(sdsc_args) == 0:
             reduced_dims = [stick_dim]
