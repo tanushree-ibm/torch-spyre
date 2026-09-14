@@ -342,6 +342,45 @@ class _ScatterScenarios:
 
         self._stage_and_e2e(kernel, out, src, idx, expect=SCATTER_OP_SPEC)
 
+    def test_index_copy_inplace_3d(self):
+        """out.index_copy_(0, idx, src) for 3-D tensor [rows, 8, 128] covering small
+        row counts including the P=1 single-row scatter scenario (rows in (1, 2)).
+        """
+        def store(out, index, src):
+            out.index_copy_(0, index, src)
+
+        for rows in (1, 2):
+            with self.subTest(rows=rows):
+                torch._dynamo.reset()
+                out = torch.zeros(rows, 8, 128, dtype=torch.float16, device="spyre")
+                src = torch.randn(rows, 8, 128, dtype=torch.float16).to("spyre")
+                idx = torch.arange(rows, dtype=torch.int64).to("spyre")
+                torch.compile(store, dynamic=False)(out, idx, src)
+                self.assertFalse(
+                    bool(out.cpu().eq(0).all()),
+                    f"rows={rows}: destination still all zero?",
+                )
+
+    def test_index_copy_inplace_3d_e2e(self):
+        """Regression test for index_copy_ on 3-D tensor [rows, 8, 128] covering
+        the P=1 (rows=1) single-row write path (verifying writes are not silently elided)
+        and normal scatter (rows=2), comparing results against CPU reference.
+        """
+        for rows in (1, 2):
+            with self.subTest(rows=rows):
+                torch._dynamo.reset()
+                out = torch.zeros(rows, 8, 128, dtype=torch.float16)
+                src = torch.randn(rows, 8, 128, dtype=torch.float16)
+                idx = torch.arange(rows, dtype=torch.int64)
+
+                def store(out, idx, src):
+                    out.index_copy_(0, idx, src)
+                    return out
+
+                self._assert_compiled_matches_cpu(
+                    store, out.clone().to("spyre"), idx.to("spyre"), src.to("spyre")
+                )
+
     def _paged_cache_layout(self, L=576, H=8, D=128):
         """The paged-KV-cache device layout for a [L, H, D] fp16 tensor: L
         (the indirectly-accessed dim) outermost, then H, then D split into
