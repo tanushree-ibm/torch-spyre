@@ -556,8 +556,25 @@ def _insert_mutation_relayout_copy(
     )
     is_scatter_op = is_scatter_op or isinstance(mutation_op.data, Scatter)
 
+    # Why this guard exists — two callers, two paths to required_stl:
+    #
+    # P>1 path (_enforce_scatter_destination_layout, line 916):
+    #   The scatter index is a runtime symbol that appears in write_dep.index.
+    #   The required layout cannot be known until we walk the write coordinates
+    #   and find which device dimension carries an IndirectAccess term.  That
+    #   walk is done here, inside the guard, so required_stl is derived lazily
+    #   from the op's own output layout and write coordinates.
+    #
+    # P=1 path (_enforce_scatter_destination_layout, line 858):
+    #   Inductor eliminates the scatter-index loop when P==1, so write_dep
+    #   contains no scatter-index symbols — the walk inside this guard would
+    #   find nothing and assert-fail.  The caller instead uses
+    #   _p1_scatter_device_pos to identify the scattered device dimension from
+    #   the singleton placeholder in stride_map (stride_map[j] == -1), builds
+    #   required_stl itself with _build_required_stl, and passes it in.
+    #   The guard short-circuits the dead walk and goes straight to the
+    #   copy-in / retarget / copy-back insertion below.
     if required_stl is None:
-        # Derive required_stl from the scatter write coordinates (P>1 path).
         output_stl = _output_real_layout(mutation_op).device_layout
         write_stride_idx: int | None = None
         if is_scatter_op:
