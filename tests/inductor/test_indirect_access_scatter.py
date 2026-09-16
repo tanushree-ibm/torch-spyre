@@ -119,7 +119,7 @@ class _ScatterScenarios:
         self.name_dims(y, {"B": Bn, "M": M, "N": N})
         self.name_dims(src, {"B": Bn, "P": P, "N": N})
         self.name_dims(idx, {"P": P})
-	print("Test")
+	print("Test_ssh_sign")
 
         def kernel(y, src, idx):
             y[:, idx] = src
