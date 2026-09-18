@@ -31,6 +31,8 @@ All scatter scenarios run with SENCORES=1.
 Status (validated on hardware build): index-tensor scatters reach a real op
 spec with IndirectAccess on the output (SCATTER_OP_SPEC); the deeptools backend
 diverges from / aborts on the bundle, surfaced here as xfail.
+
+Testing signoff key is working or not
 """
 
 import os
