@@ -346,6 +346,7 @@ class _ScatterScenarios:
         """out.index_copy_(0, idx, src) for 3-D tensor [rows, 8, 128] covering small
         row counts including the P=1 single-row scatter scenario (rows in (1, 2)).
         """
+
         def store(out, index, src):
             out.index_copy_(0, index, src)
 

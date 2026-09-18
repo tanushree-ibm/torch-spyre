@@ -733,14 +733,23 @@ def _p1_scatter_device_pos(
     # Disambiguation for multiple singleton placeholders:
     # 1. Try to infer from write_dep.index offset against target host strides.
     if write_dep is not None and target_layout is not None:
-        loop_vars = set(getattr(write_dep, "ranges", {}).keys()) | set(getattr(write_dep, "var_names", ()))
-        const_offset = write_dep.index.xreplace({v: 0 for v in write_dep.index.free_symbols if v in loop_vars})
+        loop_vars = set(getattr(write_dep, "ranges", {}).keys()) | set(
+            getattr(write_dep, "var_names", ())
+        )
+        const_offset = write_dep.index.xreplace(
+            {v: 0 for v in write_dep.index.free_symbols if v in loop_vars}
+        )
         if const_offset.is_number and const_offset > 0:
             for dev_pos in matching_positions:
                 target_host_dim = dev_pos
                 if target_host_dim < len(target_layout.stride):
                     st = int(target_layout.stride[target_host_dim])
-                    if st > 0 and int(const_offset) % (st * int(target_layout.size[target_host_dim])) >= st:
+                    if (
+                        st > 0
+                        and int(const_offset)
+                        % (st * int(target_layout.size[target_host_dim]))
+                        >= st
+                    ):
                         logger.info(
                             "_p1_scatter_device_pos: inferred dev_pos %d from constant write offset %s "
                             "(stride_map=%s, device_size=%s)",
@@ -753,9 +762,13 @@ def _p1_scatter_device_pos(
 
             # Also try positional offset decomposition into device coords
             concrete_dev_size = [int(s) for s in target_stl.device_size]
-            concrete_stride_map = [int(s) if int(s) > 0 else 0 for s in target_stl.stride_map]
+            concrete_stride_map = [
+                int(s) if int(s) > 0 else 0 for s in target_stl.stride_map
+            ]
             coords = [sympy.S.Zero] * n
-            if _decompose_constant_offset(const_offset, concrete_dev_size, concrete_stride_map, coords):
+            if _decompose_constant_offset(
+                const_offset, concrete_dev_size, concrete_stride_map, coords
+            ):
                 for dev_pos in matching_positions:
                     if coords[dev_pos] != 0:
                         logger.info(
@@ -771,26 +784,32 @@ def _p1_scatter_device_pos(
     # 2. Check if loop variable stride coefficients in write_dep.index tell us which dims are indexed by loops.
     # The scattered dim is absent from the loop-variable coefficients.
     if write_dep is not None and target_layout is not None:
-        # Collect coefficients of all loop/free symbols appearing in write_dep.index
-        loop_syms = set(getattr(write_dep, "var_names", ())) | set(getattr(write_dep, "ranges", {}).keys()) | write_dep.index.free_symbols
-        loop_coeffs = set()
-        for sym in loop_syms:
-            coeff = write_dep.index.coeff(sym)
-            if coeff is not None and coeff.is_number:
-                loop_coeffs.add(int(coeff))
+        # Collect linear coefficients of all symbols appearing in write_dep.index.
+        # Use as_coefficients_dict() to properly handle all additive terms (e.g. 1024*d0 + 128*d1).
+        coeff_dict = write_dep.index.as_coefficients_dict()
+        loop_coeffs = {
+            int(c)
+            for sym, c in coeff_dict.items()
+            if sym != 1 and getattr(c, "is_number", False)
+        }
 
-        # Check which matching positions have their host stride absent vs present in loop coefficients
-        absent_positions = []
+        # In write_dep.ranges / var_names, each loop variable corresponds to a non-scattered host dim.
+        # Find which matching singleton positions have their host stride present in loop_coeffs.
+        indexed_positions = []
+        unindexed_positions = []
         for dev_pos in matching_positions:
             if dev_pos < len(target_layout.stride):
                 st = int(target_layout.stride[dev_pos])
-                if st not in loop_coeffs:
-                    absent_positions.append(dev_pos)
+                # A dimension is indexed if a loop variable explicitly indexes it with stride st and size > 1.
+                # If size == 1, st*d0 where d0 range is (0..1) is degenerate (0), so any loop variable with coeff == st
+                # indexing a size > 1 loop indicates an indexed dim.
+                if st in loop_coeffs:
+                    indexed_positions.append(dev_pos)
+                else:
+                    unindexed_positions.append(dev_pos)
 
-        # If some matching singleton positions are absent from loop indexing while others are indexed:
-        # the scattered (non-indexed loop) dim is the absent one.
-        if absent_positions and len(absent_positions) < len(matching_positions):
-            chosen_pos = absent_positions[-1]
+        if unindexed_positions and indexed_positions:
+            chosen_pos = unindexed_positions[-1]
             logger.info(
                 "_p1_scatter_device_pos: inferred dev_pos %d from absent loop stride "
                 "(stride_map=%s, device_size=%s)",
@@ -799,9 +818,9 @@ def _p1_scatter_device_pos(
                 device_size,
             )
             return chosen_pos
-        elif absent_positions and len(absent_positions) == len(matching_positions):
-            # All singleton dimensions have identical stride and none appear in loop coeffs.
-            # In a scatter operation, the scattered dimension is the non-batch (innermost) singleton dim.
+        elif len(unindexed_positions) == len(matching_positions):
+            # If all singleton dimensions share the same stride and none appear in loop coefficients,
+            # select the innermost singleton dimension (dim 1 > dim 0).
             chosen_pos = matching_positions[-1]
             logger.info(
                 "_p1_scatter_device_pos: inferred dev_pos %d as innermost singleton dim "
@@ -822,6 +841,7 @@ def _p1_scatter_device_pos(
         device_size,
     )
     return dev_pos
+
 
 def _enforce_scatter_destination_layout(
     graph: GraphLowering,
