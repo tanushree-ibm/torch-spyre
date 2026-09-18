@@ -873,7 +873,9 @@ class TestP1ScatterDevicePos(IndirectAccessTestCase):
         """[1, 1, 8, 128] fp16: TWO size-1 dims have stride_map == -1, but a write
         offset into dim 1 (num_heads or seq) disambiguates to dev_pos=1."""
         from torch._inductor.dependencies import MemoryDep
-        from torch_spyre._inductor.enforce_indirect_access_layout import _p1_scatter_device_pos
+        from torch_spyre._inductor.enforce_indirect_access_layout import (
+            _p1_scatter_device_pos,
+        )
         import sympy
         from torch._inductor.ir import FixedLayout
 
@@ -888,7 +890,9 @@ class TestP1ScatterDevicePos(IndirectAccessTestCase):
         d1 = sympy.Symbol("d1")
         # Write to dim 1 with offset 1024 + 128*d0 + d1
         write_dep = MemoryDep("buf", 1024 + 128 * d0 + d1, (d0, d1), (8, 128))
-        pos = _p1_scatter_device_pos(stl, write_dep=write_dep, target_layout=target_layout)
+        pos = _p1_scatter_device_pos(
+            stl, write_dep=write_dep, target_layout=target_layout
+        )
         self.assertEqual(pos, 1)
 
     def test_multi_singleton_second_is_scatter_dim(self):
@@ -915,11 +919,14 @@ class TestP1ScatterDevicePos(IndirectAccessTestCase):
 
     def test_multi_singleton_disambiguated_by_absent_loop_stride(self):
         """[1, 1, 8, 128] fp16: dev_pos=0 and dev_pos=1 are size-1 with stride=-1.
-        Write dep has loop variables indexing host dim 0 (batch stride 1024) but NOT dim 1,
-        so dim 1 (dev_pos=1) is correctly identified as the scattered dimension.
+        Write dep has loop variables indexing host dim 2 (128*d0) and dim 3 (d1),
+        leaving both singleton dims (host dim 0 and 1) unindexed in loop ranges.
+        In this scenario, the non-batch innermost singleton dim 1 (dev_pos=1) is selected.
         """
         from torch._inductor.dependencies import MemoryDep
-        from torch_spyre._inductor.enforce_indirect_access_layout import _p1_scatter_device_pos
+        from torch_spyre._inductor.enforce_indirect_access_layout import (
+            _p1_scatter_device_pos,
+        )
         import sympy
         from torch._inductor.ir import FixedLayout
 
@@ -932,9 +939,12 @@ class TestP1ScatterDevicePos(IndirectAccessTestCase):
         )
         d0 = sympy.Symbol("d0")
         d1 = sympy.Symbol("d1")
-        # Loop variables index dim 0 (1024*d0) and dim 2 (128*d1); dim 1 stride is absent
-        write_dep = MemoryDep("buf", 1024 * d0 + 128 * d1, (d0, d1), (1, 8))
-        pos = _p1_scatter_device_pos(stl, write_dep=write_dep, target_layout=target_layout)
+        # Loop variables index dim 2 (128*d0) and dim 3 (d1); singleton host dims 0 & 1 have stride 1024
+        # and are not present in loop variable coefficients.
+        write_dep = MemoryDep("buf", 128 * d0 + d1, (d0, d1), (8, 128))
+        pos = _p1_scatter_device_pos(
+            stl, write_dep=write_dep, target_layout=target_layout
+        )
         self.assertEqual(pos, 1)
 
     def test_p1_scatter_requires_mutation_layout_invariant(self):
@@ -952,7 +962,11 @@ class TestP1ScatterDevicePos(IndirectAccessTestCase):
         import torch.fx as fx
         from torch._inductor.graph import GraphLowering
         from torch._inductor.virtualized import V
-        from torch._inductor.ir import ComputedBuffer, MutationLayoutSHOULDREMOVE, Scatter
+        from torch._inductor.ir import (
+            ComputedBuffer,
+            MutationLayoutSHOULDREMOVE,
+            Scatter,
+        )
         from torch_spyre._inductor.enforce_indirect_access_layout import (
             _get_indirect_access_dim_order_requirements,
             _resolve_mutation_target,
