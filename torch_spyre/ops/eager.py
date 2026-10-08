@@ -779,9 +779,17 @@ def spyre__copy_from(self, dst, non_blocking=False):
             # is dropped by Inductor, so the lowering must re-introduce it
             # in-graph (see copy_from_d2d in customops.py and
             # lower_spyre_from_d2d).
-            torch.ops.spyre.copy_from_d2d(
-                self, dst, self.storage_offset(), dst.storage_offset()
-            )
+            try:
+                torch.ops.spyre.copy_from_d2d(
+                    self, dst, self.storage_offset(), dst.storage_offset()
+                )
+            except torch._inductor.exc.InductorError:
+                # copy_from_d2d compilation failed (e.g. stride-2 write into a
+                # graph-input that the compiled path cannot restickify).
+                # Fall back to a CPU roundtrip copy so the operation still
+                # produces correct results.
+                cpu_tmp = self.to("cpu")
+                copy_tensor(cpu_tmp, dst, non_blocking)
         return dst
     else:
         if non_blocking:

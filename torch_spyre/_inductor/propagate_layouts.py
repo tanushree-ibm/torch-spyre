@@ -80,6 +80,7 @@ from .ir import (
     WaitWorkFallback,
 )
 from .pass_utils import (
+    _is_stick_expr_with_offset,
     compute_restickify_target_layout,
     concretize_expr,
     expand_sparse,
@@ -2464,7 +2465,7 @@ def _find_alt_target_stl(
     """
     dtype_for_layout = _mutation_layout_dtype(target_layout, target_stl)
     stick_size = get_elem_in_stick(dtype_for_layout)
-    write_stick = device_coordinates(target_stl, output_dep, None)[-1]
+    write_stick = device_coordinates(target_stl, output_dep, None, check_stick_expr=False)[-1]
     if is_stick_expr_offset_free(write_stick, stick_size) and not (
         _is_substick_write(write_stick, target_layout, output_dep, stick_size)
     ):
@@ -2971,15 +2972,13 @@ def propagate_spyre_tensor_layouts(
                 if alt_stl is not None:
                     assert isinstance(target_layout, FixedLayout)
                     if graph_input is not None:
-                        write_stick = device_coordinates(target_stl, output_dep, None)[
+                        write_stick = device_coordinates(target_stl, output_dep, None, check_stick_expr=False)[
                             -1
                         ]
-                        if is_stick_expr_offset_free(
-                            write_stick,
-                            get_elem_in_stick(
-                                _mutation_layout_dtype(target_layout, target_stl)
-                            ),
-                        ):
+                        stick_size = get_elem_in_stick(
+                            _mutation_layout_dtype(target_layout, target_stl)
+                        )
+                        if is_stick_expr_offset_free(write_stick, stick_size):
                             # TODO: relocating this write needs a copy-back whose
                             # write dep spans the caller's host space. The copy-back
                             # takes N_ from its own write dep ranges, which describe
@@ -2989,6 +2988,17 @@ def propagate_spyre_tensor_layouts(
                                 f"offset-free sub-stick write to graph input "
                                 f"{target_name} is not yet supported (write stick "
                                 f"{write_stick!r}, size={target_layout.size})"
+                            )
+                        if not _is_stick_expr_with_offset(write_stick, stick_size):
+                            # A scaled-mod or other unsupported form (e.g.
+                            # 2*(Mod(d1, 32)) from a stride-2 view) cannot be
+                            # restickified: the restickify node would need to read
+                            # the graph input through its strided view strides,
+                            # which is itself an unsupported access pattern.
+                            raise Unsupported(
+                                f"strided write to graph input {target_name} is not "
+                                f"yet supported (write stick {write_stick!r}, "
+                                f"size={target_layout.size})"
                             )
                         # A graph input holds only one device layout.
                         graph_input.layouts = [alt_stl]

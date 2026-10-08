@@ -29,7 +29,7 @@ from .ir import FixedTiledLayout, SpyreEmptyFallback
 from .loop_info import ReadCopyElisionRecord
 from .optimize_restickify import AnyInNode, EdgeCostMap
 from .logging_utils import get_inductor_logger
-from .pass_utils import patch_env
+from .pass_utils import invalidate_op_read_writes, patch_env
 from torch._inductor.dependencies import MemoryDep, index_vars_squeeze
 from torch._inductor.graph import GraphLowering
 from torch._inductor.ir import (
@@ -944,20 +944,18 @@ def insert_post_mutation_restickify(graph: GraphLowering) -> None:
         original_layout = mutation_op.layout
         assert isinstance(original_layout, MutationLayoutSHOULDREMOVE)
         slice_layout = original_layout.target.get_layout()
-        # A graph-input mutation reaches this pass only with a non-zero write
-        # offset: propagate_layouts rejects the offset-free (sub-stick) case
-        # before committing an alt layout, so the slice layout must carry the
-        # offset here.
-        assert slice_layout.offset != 0, (
-            f"slice offset lost while retargeting mutation {mutation_name} "
-            f"(target={type(original_layout.target).__name__}, "
-            f"layout offset={slice_layout.offset!r}); the original slice offset "
-            f"is not carried by the mutation target layout"
-        )
+        # slice_layout carries the size/stride of the write slice, which is
+        # what routes the write into buf_tmp's allocation. The offset may be
+        # zero for stride-based slices (e.g. [:, ::2]) as well as non-zero for
+        # offset-based ones (e.g. [:, 16:]); both are valid here.
         slice_view_of_buf_tmp = ReinterpretView(
             data=StorageBox(buf_tmp), layout=slice_layout
         )
         mutation_op.layout = MutationLayoutSHOULDREMOVE(slice_view_of_buf_tmp)
+        # The mutation target changed; drop any memoized read_writes so that
+        # downstream passes (e.g. span_reduction) re-trace the new dep indices
+        # instead of seeing the stale stride-2 write dep from before retargeting.
+        invalidate_op_read_writes(mutation_op)
 
         # Step 3: create the copy-back node: buf_tmp (alt_stl) -> buf_copyback (alt_stl).
         # Since the input and output STLs are the same, this reduces to an identity copy
