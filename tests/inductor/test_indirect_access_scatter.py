@@ -1297,6 +1297,30 @@ class _ScatterScenarios:
 
         self.check(kernel, inp, mask, src, expect=CRASHED)
 
+    # -- Rank-changing view before index_put_ (issue #4443) ----------------
+
+    def test_index_put_rank_changing_view_unsupported(self):
+        """index_put_ into a rank-changing view whose inner dims are sub-stick.
+
+        x has allocation shape [8, 32, 32]; a .view(8, 1024) collapses the two
+        sub-stick inner dims (32 < 64 elems/stick) before the scatter.  The
+        merged dim produces an unrepresentable stick expression (Mod(d1, 32))
+        against the allocation layout.  Regression for issue #4443 where this
+        crashed with an internal InductorError instead of a clear Unsupported.
+        """
+        x = torch.zeros(8, 32, 32, dtype=torch.float16).to("spyre")
+        slots = torch.arange(4, dtype=torch.int32).to("spyre")
+        values = torch.ones(4, 1024, dtype=torch.float16).to("spyre")
+
+        def kernel(x, slots, values):
+            x = x.view(8, 1024)
+            x.index_put_((slots,), values, accumulate=False)
+            return x
+
+        result = self.check(kernel, x, slots, values, expect=CRASHED)
+        self.assertIn("index_put_", str(result.exc))
+        self.assertIn("rank-changing view", str(result.exc))
+
 
 # Op-behaviour scenarios run once at the default 32 cores. They classify / lower
 # / run each op and do not depend on the core count, so sweeping them across every
