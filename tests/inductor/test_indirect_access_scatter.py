@@ -1305,8 +1305,8 @@ class _ScatterScenarios:
         x has allocation shape [8, 32, 32]; a .view(8, 1024) collapses the two
         sub-stick inner dims (32 < 64 elems/stick) before the scatter.  The
         merged dim produces an unrepresentable stick expression (Mod(d1, 32))
-        against the allocation layout.  Regression for issue #4443 where this
-        crashed with an internal InductorError instead of a clear Unsupported.
+        against the allocation layout.  Regression for issue #4443: the error
+        must name the buffer, the stick expression and elems_per_stick.
         """
         x = torch.zeros(8, 32, 32, dtype=torch.float16).to("spyre")
         slots = torch.arange(4, dtype=torch.int32).to("spyre")
@@ -1318,8 +1318,10 @@ class _ScatterScenarios:
             return x
 
         result = self.check(kernel, x, slots, values, expect=CRASHED)
-        self.assertIn("index_put_", str(result.exc))
-        self.assertIn("rank-changing view", str(result.exc))
+        msg = str(result.exc)
+        self.assertIn("mutation target 'arg0_1'", msg)
+        self.assertIn("Mod(d1, 32)", msg)
+        self.assertIn("elems_per_stick=64", msg)
 
 
 # Op-behaviour scenarios run once at the default 32 cores. They classify / lower
