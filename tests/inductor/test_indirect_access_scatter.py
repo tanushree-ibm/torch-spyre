@@ -1297,27 +1297,119 @@ class _ScatterScenarios:
 
         self.check(kernel, inp, mask, src, expect=CRASHED)
 
-    # -- Rank-changing view before index_put_ (issue #4443) ----------------
+    # -- Rank-changing view before a scatter (issue #4443) -----------------
 
-    def test_index_put_rank_changing_view_unsupported(self):
-        """index_put_ into a rank-changing view whose inner dims are sub-stick.
+    def test_scatter_rank_changing_view_unsupported(self):
+        """Scatter ops into a rank-changing view whose inner dims are sub-stick.
 
         x has allocation shape [8, 32, 32]; a .view(8, 1024) collapses the two
         sub-stick inner dims (32 < 64 elems/stick) before the scatter.  The
         merged dim produces an unrepresentable stick expression (Mod(d1, 32))
-        against the allocation layout.  Regression for issue #4443: the error
-        must name the buffer, the stick expression and elems_per_stick.
+        against the allocation layout.  Regression for issue #4443: every
+        scatter-lowered write must fail with a clear Unsupported naming the
+        buffer, the stick expression and elems_per_stick.
         """
-        x = torch.zeros(8, 32, 32, dtype=torch.float16).to("spyre")
-        slots = torch.arange(4, dtype=torch.int32).to("spyre")
-        values = torch.ones(4, 1024, dtype=torch.float16).to("spyre")
 
-        def kernel(x, slots, values):
-            x = x.view(8, 1024)
-            x.index_put_((slots,), values, accumulate=False)
+        def index_put(x, idx, src):
+            x.view(8, 1024).index_put_((idx,), src, accumulate=False)
             return x
 
-        result = self.check(kernel, x, slots, values, expect=CRASHED)
+        def index_put_accumulate(x, idx, src):
+            x.view(8, 1024).index_put_((idx,), src, accumulate=True)
+            return x
+
+        def index_copy(x, idx, src):
+            x.view(8, 1024).index_copy_(0, idx, src)
+            return x
+
+        def index_add(x, idx, src):
+            x.view(8, 1024).index_add_(0, idx, src)
+            return x
+
+        # (kernel, index dtype): index_copy requires a long index.
+        kernels = {
+            "index_put": (index_put, torch.int32),
+            "index_put_accumulate": (index_put_accumulate, torch.int32),
+            "index_copy": (index_copy, torch.int64),
+            "index_add": (index_add, torch.int32),
+        }
+        for name, (kernel, idx_dtype) in kernels.items():
+            with self.subTest(op=name):
+                torch._dynamo.reset()
+                x = torch.zeros(8, 32, 32, dtype=torch.float16).to("spyre")
+                idx = torch.arange(4, dtype=idx_dtype).to("spyre")
+                src = torch.ones(4, 1024, dtype=torch.float16).to("spyre")
+                result = self.check(kernel, x, idx, src, expect=CRASHED)
+                msg = str(result.exc)
+                self.assertIn("mutation target 'arg0_1'", msg)
+                self.assertIn("Mod(d1, 32)", msg)
+                self.assertIn("elems_per_stick=64", msg)
+
+    def test_scatter_rank_changing_view_unsupported_fp32(self):
+        """Same view collapse with fp32 (32 elems/stick): [8, 16, 16] -> [8, 256].
+
+        The merged inner dim has stride 16 < 32, so the message must report the
+        fp32 stick size rather than the fp16 one.
+        """
+        x = torch.zeros(8, 16, 16, dtype=torch.float32).to("spyre")
+        idx = torch.arange(4, dtype=torch.int32).to("spyre")
+        src = torch.ones(4, 256, dtype=torch.float32).to("spyre")
+
+        def kernel(x, idx, src):
+            x.view(8, 256).index_put_((idx,), src, accumulate=False)
+            return x
+
+        result = self.check(kernel, x, idx, src, expect=CRASHED)
+        msg = str(result.exc)
+        self.assertIn("mutation target 'arg0_1'", msg)
+        self.assertIn("Mod(d1, 16)", msg)
+        self.assertIn("elems_per_stick=32", msg)
+
+    def test_scatter_rank_changing_view_unsupported_reshape(self):
+        """reshape (which returns a view here) behaves like view."""
+        x = torch.zeros(8, 32, 32, dtype=torch.float16).to("spyre")
+        idx = torch.arange(4, dtype=torch.int32).to("spyre")
+        src = torch.ones(4, 1024, dtype=torch.float16).to("spyre")
+
+        def kernel(x, idx, src):
+            x.reshape(8, 1024).index_put_((idx,), src, accumulate=False)
+            return x
+
+        result = self.check(kernel, x, idx, src, expect=CRASHED)
+        msg = str(result.exc)
+        self.assertIn("mutation target 'arg0_1'", msg)
+        self.assertIn("Mod(d1, 32)", msg)
+
+    def test_scatter_rank_changing_view_unsupported_row_counts(self):
+        """The failure does not depend on the number of leading rows."""
+
+        def kernel(x, idx, src):
+            x.view(x.shape[0], 1024).index_put_((idx,), src, accumulate=False)
+            return x
+
+        for rows in (2, 16):
+            with self.subTest(rows=rows):
+                torch._dynamo.reset()
+                x = torch.zeros(rows, 32, 32, dtype=torch.float16).to("spyre")
+                idx = torch.arange(2, dtype=torch.int32).to("spyre")
+                src = torch.ones(2, 1024, dtype=torch.float16).to("spyre")
+                result = self.check(kernel, x, idx, src, expect=CRASHED)
+                msg = str(result.exc)
+                self.assertIn("mutation target 'arg0_1'", msg)
+                self.assertIn("Mod(d1, 32)", msg)
+                self.assertIn("elems_per_stick=64", msg)
+
+    def test_scatter_rank_changing_view_unsupported_bf16(self):
+        """bf16 shares fp16's 64-element stick, so the message matches fp16."""
+        x = torch.zeros(8, 32, 32, dtype=torch.bfloat16).to("spyre")
+        idx = torch.arange(4, dtype=torch.int32).to("spyre")
+        src = torch.ones(4, 1024, dtype=torch.bfloat16).to("spyre")
+
+        def kernel(x, idx, src):
+            x.view(8, 1024).index_put_((idx,), src, accumulate=False)
+            return x
+
+        result = self.check(kernel, x, idx, src, expect=CRASHED)
         msg = str(result.exc)
         self.assertIn("mutation target 'arg0_1'", msg)
         self.assertIn("Mod(d1, 32)", msg)
