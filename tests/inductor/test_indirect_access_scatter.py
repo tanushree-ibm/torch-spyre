@@ -1342,8 +1342,8 @@ class _ScatterScenarios:
                 result = self.check(kernel, x, idx, src, expect=CRASHED)
                 msg = str(result.exc)
                 self.assertIn("mutation target 'arg0_1'", msg)
-                self.assertIn("Mod(d1, 32)", msg)
                 self.assertIn("elems_per_stick=64", msg)
+                self.assertIn("collapses sub-stick dims", msg)
 
     def test_scatter_rank_changing_view_unsupported_fp32(self):
         """Same view collapse with fp32 (32 elems/stick): [8, 16, 16] -> [8, 256].
@@ -1362,8 +1362,8 @@ class _ScatterScenarios:
         result = self.check(kernel, x, idx, src, expect=CRASHED)
         msg = str(result.exc)
         self.assertIn("mutation target 'arg0_1'", msg)
-        self.assertIn("Mod(d1, 16)", msg)
         self.assertIn("elems_per_stick=32", msg)
+        self.assertIn("collapses sub-stick dims", msg)
 
     def test_scatter_rank_changing_view_unsupported_reshape(self):
         """reshape (which returns a view here) behaves like view."""
@@ -1378,7 +1378,7 @@ class _ScatterScenarios:
         result = self.check(kernel, x, idx, src, expect=CRASHED)
         msg = str(result.exc)
         self.assertIn("mutation target 'arg0_1'", msg)
-        self.assertIn("Mod(d1, 32)", msg)
+        self.assertIn("collapses sub-stick dims", msg)
 
     def test_scatter_rank_changing_view_unsupported_row_counts(self):
         """The failure does not depend on the number of leading rows."""
@@ -1396,8 +1396,8 @@ class _ScatterScenarios:
                 result = self.check(kernel, x, idx, src, expect=CRASHED)
                 msg = str(result.exc)
                 self.assertIn("mutation target 'arg0_1'", msg)
-                self.assertIn("Mod(d1, 32)", msg)
                 self.assertIn("elems_per_stick=64", msg)
+                self.assertIn("collapses sub-stick dims", msg)
 
     def test_scatter_rank_changing_view_unsupported_bf16(self):
         """bf16 shares fp16's 64-element stick, so the message matches fp16."""
@@ -1412,8 +1412,8 @@ class _ScatterScenarios:
         result = self.check(kernel, x, idx, src, expect=CRASHED)
         msg = str(result.exc)
         self.assertIn("mutation target 'arg0_1'", msg)
-        self.assertIn("Mod(d1, 32)", msg)
         self.assertIn("elems_per_stick=64", msg)
+        self.assertIn("collapses sub-stick dims", msg)
 
 
 # Op-behaviour scenarios run once at the default 32 cores. They classify / lower
