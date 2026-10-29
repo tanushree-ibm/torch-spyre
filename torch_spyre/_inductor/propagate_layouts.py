@@ -2450,7 +2450,7 @@ def _scan_mutation_layout_inputs(
             in_args = _get_prop_args([first_read], strict=False)
             in_arg = in_args[0] if in_args else None
             alt_stl = _find_alt_target_stl(
-                target_layout, target_stl, output_dep, in_arg, target_name=name
+                target_layout, target_stl, output_dep, in_arg
             )
             if alt_stl is None:
                 continue
@@ -2598,40 +2598,21 @@ def _find_alt_target_stl(
     target_stl: SpyreTensorLayout,
     output_dep: MemoryDep,
     in_arg: PropArg | None = None,
-    target_name: str | None = None,
 ) -> SpyreTensorLayout | None:
     """Alt SpyreTensorLayout with an offset-free stick expression for a mutation
     target, or None if the current layout already works; raises Unsupported if no
     alternative exists.
 
-    An offset write, an offset-free sub-stick write (see ``_is_substick_write``),
-    or an entirely unrepresentable stick expression (e.g. ``Mod(d1, 32)`` for
-    fp16 where ``elems_per_stick=64``, produced when a mutation target was viewed
-    through a non-stick-aligned shape such as ``[8, 32, 32] → [8, 1024]``) all
-    need their stick dim relocated.  The first candidate reachable from the
-    write's input stick wins, meaning one an ordinary stick-permutation
-    restickify can produce, so a degenerate ``stick=0`` candidate cannot win a
-    pairing the cost model would reject as a scatter.  Falls back to the first
-    offset-free candidate.
+    An offset write, or an offset-free sub-stick write (see
+    ``_is_substick_write``), needs its stick dim relocated. The first candidate
+    reachable from the write's input stick wins, meaning one an ordinary
+    stick-permutation restickify can produce, so a degenerate ``stick=0``
+    candidate cannot win a pairing the cost model would reject as a scatter.
+    Falls back to the first offset-free candidate.
     """
     dtype_for_layout = _mutation_layout_dtype(target_layout, target_stl)
     stick_size = get_elem_in_stick(dtype_for_layout)
-    coords = try_device_coordinates(target_stl, output_dep, None)
-    if coords is None:
-        # The current layout produces an unrepresentable stick expression (e.g.
-        # Mod(d1, 32) when elems_per_stick=64).  No permutation of the existing
-        # allocation dimensions can fix this, so raise immediately with a clear
-        # message rather than searching for an alt that cannot exist.
-        _name_clause = f" mutation target {target_name!r}," if target_name else ""
-        raise Unsupported(
-            f"write to{_name_clause} allocation size "
-            f"{list(target_layout.size)!r} (dtype={target_layout.dtype}, "
-            f"elems_per_stick={stick_size}) has no representable stick layout: "
-            f"the write index {output_dep.index!r} collapses sub-stick dims. "
-            f"Allocate the input with an innermost dimension that is a multiple "
-            f"of {stick_size}."
-        )
-    write_stick = coords[-1]
+    write_stick = device_coordinates(target_stl, output_dep, None)[-1]
     if is_stick_expr_offset_free(write_stick, stick_size) and not (
         _is_substick_write(write_stick, target_layout, output_dep, stick_size)
     ):

@@ -1341,9 +1341,9 @@ class _ScatterScenarios:
                 src = torch.ones(4, 1024, dtype=torch.float16).to("spyre")
                 result = self.check(kernel, x, idx, src, expect=CRASHED)
                 msg = str(result.exc)
-                self.assertIn("mutation target 'arg0_1'", msg)
-                self.assertIn("elems_per_stick=64", msg)
-                self.assertIn("collapses sub-stick dims", msg)
+                self.assertIn("innermost allocation stride (32)", msg)
+                self.assertIn("elems_per_stick (64)", msg)
+                self.assertIn("sub-stick", msg)
 
     def test_scatter_rank_changing_view_unsupported_fp32(self):
         """Same view collapse with fp32 (32 elems/stick): [8, 16, 16] -> [8, 256].
@@ -1361,9 +1361,9 @@ class _ScatterScenarios:
 
         result = self.check(kernel, x, idx, src, expect=CRASHED)
         msg = str(result.exc)
-        self.assertIn("mutation target 'arg0_1'", msg)
-        self.assertIn("elems_per_stick=32", msg)
-        self.assertIn("collapses sub-stick dims", msg)
+        self.assertIn("innermost allocation stride (16)", msg)
+        self.assertIn("elems_per_stick (32)", msg)
+        self.assertIn("sub-stick", msg)
 
     def test_scatter_rank_changing_view_unsupported_reshape(self):
         """reshape (which returns a view here) behaves like view."""
@@ -1377,8 +1377,8 @@ class _ScatterScenarios:
 
         result = self.check(kernel, x, idx, src, expect=CRASHED)
         msg = str(result.exc)
-        self.assertIn("mutation target 'arg0_1'", msg)
-        self.assertIn("collapses sub-stick dims", msg)
+        self.assertIn("innermost allocation stride (32)", msg)
+        self.assertIn("sub-stick", msg)
 
     def test_scatter_rank_changing_view_unsupported_row_counts(self):
         """The failure does not depend on the number of leading rows."""
@@ -1395,9 +1395,9 @@ class _ScatterScenarios:
                 src = torch.ones(2, 1024, dtype=torch.float16).to("spyre")
                 result = self.check(kernel, x, idx, src, expect=CRASHED)
                 msg = str(result.exc)
-                self.assertIn("mutation target 'arg0_1'", msg)
-                self.assertIn("elems_per_stick=64", msg)
-                self.assertIn("collapses sub-stick dims", msg)
+                self.assertIn("innermost allocation stride (32)", msg)
+                self.assertIn("elems_per_stick (64)", msg)
+                self.assertIn("sub-stick", msg)
 
     def test_scatter_rank_changing_view_unsupported_bf16(self):
         """bf16 shares fp16's 64-element stick, so the message matches fp16."""
@@ -1411,9 +1411,70 @@ class _ScatterScenarios:
 
         result = self.check(kernel, x, idx, src, expect=CRASHED)
         msg = str(result.exc)
-        self.assertIn("mutation target 'arg0_1'", msg)
-        self.assertIn("elems_per_stick=64", msg)
-        self.assertIn("collapses sub-stick dims", msg)
+        self.assertIn("innermost allocation stride (32)", msg)
+        self.assertIn("elems_per_stick (64)", msg)
+        self.assertIn("sub-stick", msg)
+
+    def test_scatter_rank_changing_view_4d_to_2d_unsupported(self):
+        """4-D -> 2-D collapse when inner three dims are all sub-stick.
+
+        [4, 8, 8, 16] -> [4, 1024]: inner strides are 16 and 8 and 8 — all
+        below elems_per_stick=64.  The merged write index produces an
+        unrepresentable stick expression and must raise Unsupported.
+        """
+        x = torch.zeros(4, 8, 8, 16, dtype=torch.float16).to("spyre")
+        idx = torch.arange(2, dtype=torch.int32).to("spyre")
+        src = torch.ones(2, 1024, dtype=torch.float16).to("spyre")
+
+        def kernel(x, idx, src):
+            x.view(4, 1024).index_put_((idx,), src, accumulate=False)
+            return x
+
+        result = self.check(kernel, x, idx, src, expect=CRASHED)
+        msg = str(result.exc)
+        self.assertIn("innermost allocation stride (16)", msg)
+        self.assertIn("elems_per_stick (64)", msg)
+        self.assertIn("sub-stick", msg)
+
+    def test_scatter_rank_changing_view_partial_collapse_unsupported(self):
+        """Partial collapse: three sub-stick trailing dims collapsed to one.
+
+        [8, 4, 32, 32] -> [8, 4096]: the three inner dims (strides 32 and 32)
+        are merged into a single dim while the leading dim stays intact.  The
+        merged inner stride is still 32 < 64, so still unrepresentable.
+        """
+        x = torch.zeros(8, 4, 32, 32, dtype=torch.float16).to("spyre")
+        idx = torch.arange(2, dtype=torch.int32).to("spyre")
+        src = torch.ones(2, 4096, dtype=torch.float16).to("spyre")
+
+        def kernel(x, idx, src):
+            x.view(8, 4096).index_put_((idx,), src, accumulate=False)
+            return x
+
+        result = self.check(kernel, x, idx, src, expect=CRASHED)
+        msg = str(result.exc)
+        self.assertIn("innermost allocation stride (32)", msg)
+        self.assertIn("sub-stick", msg)
+
+    def test_scatter_rank_changing_view_int8_unsupported(self):
+        """int8 has elems_per_stick=128; inner dim of 64 is sub-stick for int8.
+
+        [8, 8, 64] -> [8, 512]: inner stride 64 < 128 (int8 stick size), so
+        unrepresentable.  The error must report elems_per_stick=128.
+        """
+        x = torch.zeros(8, 8, 64, dtype=torch.int8).to("spyre")
+        idx = torch.arange(4, dtype=torch.int32).to("spyre")
+        src = torch.ones(4, 512, dtype=torch.int8).to("spyre")
+
+        def kernel(x, idx, src):
+            x.view(8, 512).index_put_((idx,), src, accumulate=False)
+            return x
+
+        result = self.check(kernel, x, idx, src, expect=CRASHED)
+        msg = str(result.exc)
+        self.assertIn("innermost allocation stride (64)", msg)
+        self.assertIn("elems_per_stick (128)", msg)
+        self.assertIn("sub-stick", msg)
 
 
 # Op-behaviour scenarios run once at the default 32 cores. They classify / lower
