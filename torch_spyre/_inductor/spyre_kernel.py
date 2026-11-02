@@ -1380,7 +1380,7 @@ class SpyreKernel(Kernel[CSEVariable]):
 
             in_coords = args[-2].device_coordinates
             out_coords = args[-1].device_coordinates
-            if is_restickify_coords(in_coords, out_coords):
+            if not indirect_syms_used and is_restickify_coords(in_coords, out_coords):
                 op = RESTICKIFY_OP
             else:
                 op = IDENTITY_OP
@@ -1502,6 +1502,8 @@ class SpyreKernel(Kernel[CSEVariable]):
             if isinstance(x, IndirectAccess):
                 name_sym = x.args[0]
                 return f"IndirectAccess('{name_sym}')"
+            if hasattr(x, "has") and x.has(IndirectAccess):
+                return f"sympify('{x}', locals={{'IndirectAccess': IndirectAccess}})"
             return "sympify('" + str(x) + "')"
 
         self.remove_kernel_local_buffers()

@@ -684,7 +684,7 @@ def _check_stick_all_same(op_spec: OpSpec, stage: str) -> None:
         # create_tensor_arg); args without a name are never index tensors.
         if arg.name is not None and arg.name in index_tensor_names:
             continue
-        syms = _arg_stick_syms(arg)
+        syms = {s for s in _arg_stick_syms(arg) if str(s) not in index_tensor_names}
         if syms:
             stick_vars.add(min(syms, key=str))
 
@@ -704,9 +704,10 @@ def _check_stick_all_same(op_spec: OpSpec, stage: str) -> None:
 
 def _check_stick_restickify(op_spec: OpSpec, stage: str) -> None:
     """ReStickifyOpHBM: input and output must have different stick symbols."""
+    index_tensor_names = _indirect_index_tensor_names(op_spec)
     stick_vars: set[sympy.Symbol] = set()
     for arg in op_spec.args:
-        syms = _arg_stick_syms(arg)
+        syms = {s for s in _arg_stick_syms(arg) if str(s) not in index_tensor_names}
         if syms:
             stick_vars.add(min(syms, key=str))
 
